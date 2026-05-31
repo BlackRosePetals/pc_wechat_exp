@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Test-Path *)",
+      "PowerShell(Test-Path *)",
+      "Bash(git -C \"D:\\\\perl_wrk\\\\PC_Wechat\\\\wechat-exp\" ls-files)",
+      "Bash(Select-Object -First 200)",
+      "PowerShell(git *)",
+      "Bash(sqlite3 *)",
+      "Bash(python -c \"from engine.services.chat import _resolve_display, _build_group_members; print\\('chat.py imports OK'\\)\")",
+      "Bash(python -c \"from chat_list import scan_chats, list_chats; print\\('chat_list.py imports OK'\\)\")",
+      "Bash(python -c \"from engine.services.chat import get_contacts; print\\('get_contacts OK'\\)\")",
+      "Bash(python -c \"from engine.utils import load_contacts, iter_message_dbs; print\\('utils.py imports OK'\\)\")",
+      "Bash(PYTHONPATH=src python -c \"from engine.services.chat import _resolve_display, _build_group_members; print\\('chat.py imports OK'\\)\")",
+      "Bash(PYTHONPATH=src python -c \"from chat_list import scan_chats, list_chats; print\\('chat_list.py imports OK'\\)\")",
+      "Bash(PYTHONPATH=src python -c \"from engine.services.chat import get_contacts; print\\('get_contacts OK'\\)\")",
+      "Bash(PYTHONPATH=src python -c \"from engine.utils import load_contacts, iter_message_dbs; print\\('utils.py imports OK'\\)\")",
+      "Bash(PYTHONPATH=src python -c \"from chat_export import export_chat; print\\('chat_export OK'\\)\")",
+      "Bash(PYTHONPATH=src python -c \"from employee_match import match_employees; print\\('employee_match OK'\\)\")",
+      "Bash(PYTHONPATH=src python -c \"from engine.services.chat import get_group_info, get_group_members; print\\('api deps OK'\\)\")",
+      "Bash(PYTHONPATH=src python -m py_compile src/chat_list.py)",
+      "Bash(PYTHONPATH=src python -m py_compile src/engine/utils.py)",
+      "Bash(PYTHONPATH=src python -m py_compile src/engine/services/chat.py)",
+      "Bash(PYTHONPATH=src python -c \"from engine.constants import MSG_TYPES_CN, MSG_TYPE_ORDER, MSG_TYPE_COLORS; print\\('MSG_TYPES_CN:', MSG_TYPES_CN\\); print\\('ORDER:', MSG_TYPE_ORDER\\); print\\('COLORS keys:', list\\(MSG_TYPE_COLORS.keys\\(\\)\\)\\); print\\('type 6:', MSG_TYPES_CN.get\\(6\\)\\)\")",
+      "Bash(PYTHONPATH=src python -c \"from engine.constants import MSG_TYPES_CN, MSG_TYPE_ORDER, MSG_TYPE_COLORS; print\\('CN count:', len\\(MSG_TYPES_CN\\)\\); print\\('ORDER count:', len\\(MSG_TYPE_ORDER\\)\\); print\\('COLORS count:', len\\(MSG_TYPE_COLORS\\)\\); assert 6 in MSG_TYPES_CN; assert '文件' in MSG_TYPE_ORDER; assert '文件' in MSG_TYPE_COLORS; print\\('ALL OK'\\)\")",
+      "Bash(PYTHONPATH=src python -m py_compile src/employee_match.py)",
+      "Bash(PYTHONPATH=src python -c \"from employee_match import _COLUMN_MAP, _detect_columns; headers = ['序号', '姓名', '部门', '移动电话', '状态', '大区']; cols = _detect_columns\\(headers\\); print\\('headers:', headers\\); print\\('detected:', cols\\); assert cols['name'] == 1; assert cols['dept'] == 2; assert cols['phone'] == 3; assert cols['status'] == 4; assert cols['region'] == 5; print\\('all assertions passed'\\)\")",
+      "Bash(PYTHONPATH=src python -m py_compile src/engine/services/media.py)",
+      "Bash(PYTHONPATH=src python -c \"from engine.services.media import _extract_media_keys_from_dbs, _get_account_media_keys; print\\('imports OK'\\)\")",
+      "Bash(PYTHONPATH=src python -m py_compile src/engine/services/message.py)",
+      "Bash(PYTHONPATH=src python -c \"from engine.services.message import query_messages; print\\('import OK'\\)\")"
+    ]
+  }
+}
