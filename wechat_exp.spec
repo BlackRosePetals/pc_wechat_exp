@@ -9,7 +9,7 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
 a = Analysis(
-    ['D:\\perl_wrk\\pc_wechat_exp_sync\\src\\main.py'],
+    ['d:\\perl_wrk\\pc_wechat_exp_sync\\src\\main.py'],
     pathex=[],
     binaries=binaries,
     datas=datas,
@@ -42,5 +42,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    version='D:\\perl_wrk\\pc_wechat_exp_sync\\file_version_info.txt',
+    version='d:\\perl_wrk\\pc_wechat_exp_sync\\file_version_info.txt',
 )

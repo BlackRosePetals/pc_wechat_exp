@@ -132,6 +132,7 @@ def cmd_backup(args):
     result = run_backup(
         db_path, output_dir, key_file,
         start_date=start_date, end_date=end_date,
+        link_dest=getattr(args, 'link_dest', None),
         on_progress=_make_progress_display(),
         harvest_keys=harvest,
     )
@@ -142,7 +143,7 @@ def cmd_backup(args):
         stats = result['stats']
         print(f"  解密数据库: {stats.get('decrypted', 0)} 个")
         m = stats.get('migrated', {})
-        print(f"  媒体文件: {m.get('hardlinked', 0)} 硬链接, {m.get('copied', 0)} 复制")
+        print(f"  媒体文件: {m.get('hardlinked', 0)} 硬链接, {m.get('link_reused', 0)} 复用上轮, {m.get('copied', 0)} 复制")
         v2k = stats.get('v2_keys_harvested', 0)
         if v2k > 0:
             print(f"  V2 图片密钥: {v2k} 个（后台收割）")
@@ -224,11 +225,20 @@ def _make_progress_display():
     import time as _time
     start_time = _time.time()
 
+    # Pick safe progress-bar characters for the current stdout encoding.
+    # GBK (cp936) cannot encode Unicode box-drawing chars (█░), so we fall
+    # back to ASCII when the encoding doesn't support them.
+    try:
+        "█░".encode(sys.stdout.encoding or 'utf-8')
+        _fill_char, _empty_char = "█", "░"
+    except (UnicodeEncodeError, LookupError):
+        _fill_char, _empty_char = "#", "-"
+
     def _display(stage: str, detail: str, progress: float):
         elapsed = _time.time() - start_time
         bar_width = 28
         filled = int(bar_width * min(progress, 1.0))
-        bar = "█" * filled + "░" * (bar_width - filled)
+        bar = _fill_char * filled + _empty_char * (bar_width - filled)
         pct = int(progress * 100)
         label = _STAGE_LABELS.get(stage, stage)
 
@@ -352,6 +362,7 @@ def main():
     bp.add_argument('--date-from', help='起始日期 YYYY-MM-DD (覆盖 --days)')
     bp.add_argument('--date-to', help='截止日期 YYYY-MM-DD (覆盖 --days)')
     bp.add_argument('--wxid', help='指定备份的微信账号 (多个账号时必选)')
+    bp.add_argument('--link-dest', help='前一次备份目录，媒体文件优先从该目录硬链接复用')
     bp.add_argument('--no-harvest', action='store_true',
                     help='禁用后台 V2 图片密钥收割')
 
