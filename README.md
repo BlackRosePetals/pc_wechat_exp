@@ -1,6 +1,6 @@
 # WeChat EXP 使用手册
 
-> 版本：2.1 | 更新日期：2026-05-31 | 适用 WeChat 4.x（已测试 4.1.9 / 4.1.10）| Windows 10/11
+> 版本：2.3 | 更新日期：2026-06-01 | 适用 WeChat 4.x（已测试 4.1.9 / 4.1.10）| Windows 10/11
 
 ---
 
@@ -567,6 +567,9 @@ wechat_exp.exe backup [选项]
   --days N              备份最近 N 天 (默认: 30, 0=全部)
   --date-from DATE      起始日期 YYYY-MM-DD
   --date-to DATE        截止日期 YYYY-MM-DD
+  --wxid WXID           指定备份的微信账号（多账号时必选）
+  --link-dest PATH      前一次备份目录，媒体文件优先从该目录硬链接复用（增量备份）
+  --no-harvest          禁用后台 V2 图片密钥收割
 ```
 
 ### 7.3 serve 命令
@@ -622,6 +625,9 @@ wechat_exp.exe -q -c 张三          # 直接打开张三的聊天
 wechat_exp.exe backup --days 7 --output "backup\latest"
 wechat_exp.exe serve --decrypted-dir "backup\latest"
 
+# 每日增量备份（复用前次媒体文件，仅复制新增）
+wechat_exp.exe backup --days 0 --wxid 你的wxid --link-dest "E:\wechat_bak\backup\2026-06-01"
+
 # 导出分析报告
 wechat_exp.exe export -m wordcloud
 wechat_exp.exe export -m report
@@ -642,13 +648,13 @@ python main.py serve
 ---
 
 > **技术支持**：如遇到问题，请查看 `docs/开发手册.md` 了解技术细节，或提交 Issue 反馈。  
-> **最后更新**：2026-05-31
+> **最后更新**：2026-06-01
 
 ---
 
 ## 下载地址
 
-- 最新版本：`wechat_exp.exe` → [点击下载](https://github.com/sunhanaix/pc_wechat_exp/releases/download/untagged-be247e6259ffddcbf085/wechat_exp.exe)
+- 最新版本：`wechat_exp_2.3.20260601.exe` → [点击下载](https://github.com/sunhanaix/pc_wechat_exp/releases/download/v2.3.20260601/wechat_exp_2.3.20260601.exe)
 
 **源码地址**：[https://github.com/sunhanaix/pc_wechat_exp](https://github.com/sunhanaix/pc_wechat_exp)
 
