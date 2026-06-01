@@ -1,5 +1,6 @@
 """Media file resolution and serving."""
 import os
+import re
 import sqlite3
 import mimetypes
 import struct

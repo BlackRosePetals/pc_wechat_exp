@@ -2,6 +2,7 @@
 聊天记录导出 — 按联系人/时间/关键词过滤，输出格式化 TXT。
 """
 import os
+import re
 import sqlite3
 from datetime import datetime
 
