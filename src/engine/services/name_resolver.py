@@ -222,6 +222,26 @@ def resolve_wxid(decrypted_dir: str, wxid: str) -> str:
                 name = pick_display_name(wxid, row[0], row[1], row[2], row[3])
                 if name and name != wxid:
                     result = name
+                # WeChat 4.x: the same wxid can appear both with and without an
+                # account suffix (e.g. wxid_xxx vs wxid_xxx_10e8). The unsuffixed
+                # row often lacks a remark, while the suffixed one carries it.
+                # When the exact match yielded a nick/alias (not remark), check
+                # for a suffixed variant with a remark.
+                remark = (row[0] or '').strip()
+                if not remark:
+                    suffixed = conn.execute(
+                        "SELECT remark, nick_name, alias, username FROM contact "
+                        "WHERE username LIKE ? ESCAPE '\\'"
+                        "  AND remark IS NOT NULL AND remark != ''"
+                        "  AND remark != username"
+                        " LIMIT 1",
+                        (wxid.replace('_', '\\_') + '\\_%',)
+                    ).fetchone()
+                    if suffixed:
+                        name2 = pick_display_name(wxid, suffixed[0], suffixed[1],
+                                                  suffixed[2], suffixed[3])
+                        if name2 and name2 != wxid:
+                            result = name2
             else:
                 # Exact match on alias (the wxid may be stored as alias, not username)
                 row = conn.execute(

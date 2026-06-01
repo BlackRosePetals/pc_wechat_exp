@@ -131,19 +131,27 @@ def export_chat(chat_info, out_dir, start_ts=None, end_ts=None, keyword=None,
             for r in conn.execute(
                 "SELECT id, remark, nick_name, alias, username FROM contact"
             ):
-                if r[0]:
-                    wxid = r[0]
+                wxid = (r[4] or '').strip()
+                if wxid:
                     remark_v = (r[1] or '').strip()
                     nick_v = (r[2] or '').strip()
                     alias_v = (r[3] or '').strip()
-                    uname = (r[4] or wxid or '').strip()
-                    display = remark_v if (remark_v and remark_v != uname) else (
-                        nick_v if (nick_v and nick_v != uname) else (
-                            alias_v if (alias_v and alias_v != uname) else uname
+                    display = remark_v if (remark_v and remark_v != wxid) else (
+                        nick_v if (nick_v and nick_v != wxid) else (
+                            alias_v if (alias_v and alias_v != wxid) else wxid
                         )
                     )
                     if display:
                         sender_map[wxid] = display
+                    # WeChat 4.x account suffix: wxid_xxx_10e8 has the remark,
+                    # but message DB references the base wxid_xxx. Also map the
+                    # base wxid so sender lookups resolve correctly.
+                    if remark_v and remark_v != wxid:
+                        m = re.match(r'^(.+?)_\d{2,}[a-z0-9]*$', wxid)
+                        if m:
+                            base = m.group(1)
+                            if base not in sender_map:
+                                sender_map[base] = display
             conn.close()
         except (sqlite3.Error, OSError):
             pass
