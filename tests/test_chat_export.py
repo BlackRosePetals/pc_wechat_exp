@@ -14,8 +14,8 @@ def contact_db(tmp_path):
     con.executemany(
         'INSERT INTO contact VALUES (?,?,?,?,?)',
         [
-            (1, 'wxid_alpha_10e8', '张老师', '张', 'zhangs'),
-            (2, 'huoshuanghuan', '', '霍双欢', 'hsh2110'),
+            (1, 'wxid_alpha_10e8', '李老师', '李', 'lisi'),
+            (2, 'contact_a', '', '张三', 'zhangsan'),
             (3, 'wxid_noRemark_10e8', '', '无备注昵称', 'nobk'),
         ])
     con.commit()
@@ -25,11 +25,11 @@ def contact_db(tmp_path):
 
 class TestResolveSenderAny:
     def test_exact_username_returns_remark(self, contact_db):
-        # wxid_alpha_10e8 row has remark 张老师
-        assert _resolve_sender_any('wxid_alpha', contact_db) == '张老师'
+        # wxid_alpha_10e8 row has remark 李老师
+        assert _resolve_sender_any('wxid_alpha', contact_db) == '李老师'
 
     def test_username_without_remark_returns_nick(self, contact_db):
-        assert _resolve_sender_any('huoshuanghuan', contact_db) == '霍双欢'
+        assert _resolve_sender_any('contact_a', contact_db) == '张三'
 
     def test_unsuffixed_base_resolves_to_suffixed_remark(self, contact_db):
         # message DB stores wxid_noRemark (base), remark lives on suffixed row
