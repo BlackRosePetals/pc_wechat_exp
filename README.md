@@ -228,7 +228,7 @@ WeChat EXP 是一款 Windows 平台下的微信聊天记录**备份、查看与�
 1. 在「**联系人/群聊标识**」输入框中，输入联系人或群聊的名称
    - 支持模糊输入，只输入部分名称即可（如输入"中望"）
 2. （可选）选择「**开始日期**」和「**结束日期**」，限定导出范围
-3. （可选）选择导出格式：「TXT 文本」或「HTML」
+3. （可选）选择导出格式：「TXT 文本」「HTML」；如需对接 [ChatLab](https://github.com/ChatLab/ChatLab) 分析，请使用命令行导出 ChatLab 标准格式（见 [7.8 ChatLab 集成](#78-chatlab-集成导出--远程数据源)）
 4. 点击「**开始导出**」按钮
 5. 系统自动扫描匹配：
    - **只有 1 个匹配**：直接开始导出
@@ -647,6 +647,63 @@ python main.py serve
 ```
 
 源代码版本的使用方式与 .exe 版本完全一致，只需将命令中的 `wechat_exp.exe` 替换为 `python main.py`。
+
+### 7.8 ChatLab 集成（导出 + 远程数据源）
+
+[ChatLab](https://github.com/ChatLab/ChatLab) 是一款开源的聊天记录分析工具。WeChat EXP 支持两种对接方式：**导出 ChatLab 标准格式** 与 **Pull 远程数据源协议**。
+
+#### 方式一：导出 ChatLab 格式文件
+
+将聊天记录导出为 ChatLab 标准格式（JSONL 或 JSON），然后在 ChatLab 中导入：
+
+```bash
+# 导出全部会话（JSONL，推荐；支持断点续传）
+wechat_exp.exe export -m chatlab
+
+# 只导出名称匹配的会话
+wechat_exp.exe export -m chatlab --chat 张三
+
+# 指定输出目录与格式
+wechat_exp.exe export -m chatlab --output "E:\chatlab_export" --format jsonl
+
+# 使用 JSON 格式（单文件、便于阅读；不支持断点续传）
+wechat_exp.exe export -m chatlab --format json
+```
+
+**断点续传（大数据量场景）**：JSONL 导出按会话分文件，每 50 条落盘一次，并在输出目录维护进度清单 `_chatlab_export_state.json`。如果导出中途被中断（关机、崩溃、手动停止），**重新执行同一条命令即可自动续传**——已完成的会话会跳过，未完成的会话从上次的位置继续追加，不会重复或丢失消息。
+
+| 特性 | 说明 |
+|------|------|
+| 输出粒度 | 每个会话一个 `.jsonl`（可单独导入，也可批量导入） |
+| 落盘策略 | 每 50 条 flush + 每会话完成时更新进度清单 |
+| 中断恢复 | 自动截断文件末尾不完整的行，按 `(时间戳, 消息ID)` 复合游标续传 |
+| 去重保障 | `platformMessageId` 带分片前缀，会话内全局唯一 |
+| JSON 格式 | 写 `.partial` 完成后原子改名，避免产生无法解析的半截文件 |
+
+在 ChatLab 中：**首页 → 导入 → 选择输出目录下的 `.jsonl` 文件**（可多选）。
+
+#### 方式二：Pull 远程数据源（推荐）
+
+WeChat EXP 内置 Pull 协议服务（[协议规范](https://github.com/ChatLab/ChatLab/blob/main/docs/cn/standard/chatlab-pull.md)），ChatLab 可自动发现会话、全量拉取、增量同步：
+
+```bash
+# 启动数据源服务（默认 127.0.0.1:8765）
+wechat_exp.exe chatlab-pull
+
+# 局域网访问（手机/其他电脑上的 ChatLab 也能连）
+wechat_exp.exe chatlab-pull --host 0.0.0.0 --port 8765 --token 你的访问令牌
+```
+
+启动后在 ChatLab 中操作：**设置 → 数据源 → 添加远程数据源 → 填入 `http://127.0.0.1:8765`（如设了 Token 一并填写）**，即可浏览会话列表、选择导入、点击"立即同步"。
+
+| 端点 | 用途 |
+|------|------|
+| `GET /sessions` | 发现：会话列表（支持 `keyword` / `limit` / `cursor` 分页） |
+| `GET /sessions/<id>/messages?format=chatlab&since=<ts>&limit=<n>` | 拉取：`since=0` 全量，`since>0` 增量；`sync.hasMore`/`nextSince` 自动续拉 |
+| `GET /push/messages` | SSE 实时通知（可选，用于秒级触发同步） |
+| `GET /health` | 健康检查 |
+
+> **提示**：服务读取的是**已解密**的备份数据（`backup/` 或 `output/decrypted`），请先执行一次备份。服务默认仅监听本机，如需局域网访问请加 `--host 0.0.0.0` 并设置 `--token`。
 
 ---
 

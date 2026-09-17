@@ -173,6 +173,82 @@ def cmd_serve(args):
     run_server(decrypted, wxid=wxid, db_dir=db_dir, host=args.host, port=args.port)
 
 
+def cmd_chatlab_pull(args):
+    """启动 ChatLab Pull 远程数据源服务。"""
+    from engine.config_file import get_backup_wxid
+    from engine.utils import find_all_wechat_data_dirs
+    from chatlab_pull_server import run_pull_server
+
+    decrypted = args.decrypted_dir or _resolve_decrypted_dir()
+    if not os.path.isdir(decrypted):
+        print("错误: 解密目录不存在: " + str(decrypted))
+        print("请先运行 backup 命令，或使用 --decrypted-dir 指定目录")
+        return
+
+    own_wxid = get_backup_wxid()
+    if not own_wxid:
+        try:
+            dirs = find_all_wechat_data_dirs()
+            if dirs:
+                own_wxid = dirs[0]['wxid']
+        except Exception:
+            pass
+
+    run_pull_server(decrypted, own_wxid=own_wxid,
+                    host=args.host, port=args.port,
+                    token=args.token, print_fn=print)
+
+
+def _export_chatlab_cmd(args):
+    """导出 ChatLab 标准格式（支持断点续传）。"""
+    from engine.config_file import get_backup_wxid
+    from engine.utils import find_all_wechat_data_dirs
+    from chatlab_export import export_all_chatlab
+
+    decrypted = args.decrypted_dir or _resolve_decrypted_dir()
+    fmt = getattr(args, 'format', None) or 'jsonl'
+    resume = not getattr(args, 'no_resume', False)
+    name_filter = getattr(args, 'chat', None)
+    out_dir = args.output or os.path.join(decrypted, '..', 'chatlab_export')
+
+    if not os.path.isdir(decrypted):
+        print("错误: 解密目录不存在: " + str(decrypted))
+        print("请先运行 backup 命令，或使用 --decrypted-dir 指定目录")
+        return
+
+    own_wxid = get_backup_wxid()
+    if not own_wxid:
+        try:
+            dirs = find_all_wechat_data_dirs()
+            if dirs:
+                own_wxid = dirs[0]['wxid']
+        except Exception:
+            pass
+
+    print("=" * 56)
+    print("  ChatLab 格式导出")
+    print("=" * 56)
+    print("  解密目录: " + str(decrypted))
+    print("  输出目录: " + str(out_dir))
+    print("  格式: " + fmt + ("  (支持断点续传)" if fmt == 'jsonl' else "  (不支持续传，建议 jsonl)"))
+    print("  断点续传: " + ("开启（中断后重跑本命令即可继续）" if resume else "关闭"))
+    if name_filter:
+        print("  过滤: " + str(name_filter))
+    print()
+
+    result = export_all_chatlab(
+        decrypted, out_dir, fmt=fmt, own_wxid=own_wxid,
+        resume=resume, name_filter=name_filter,
+        print_fn=print, progress_fn=lambda pct, msg: None,
+    )
+    print()
+    print("完成: %d 个会话导出, %d 个跳过（已完成）, %d 个失败"
+          % (result['exported'], result['skipped'], result['failed']))
+    print("进度清单: " + result['state_file'])
+    print()
+    print("导入 ChatLab：打开 ChatLab → 导入 → 选择输出目录下的 .jsonl 文件")
+
+
 def cmd_export(args):
     """Export chat data in various formats."""
     mode = args.mode
@@ -194,6 +270,8 @@ def cmd_export(args):
     elif mode == 'list':
         from chat_list import list_chats
         list_chats()
+    elif mode == 'chatlab':
+        _export_chatlab_cmd(args)
     elif mode == 'keys':
         from key_scan import run_key_scan
         from engine.utils import is_wechat_running
@@ -391,13 +469,28 @@ def main():
     # export
     ep = sub.add_parser('export', help='导出聊天记录')
     ep.add_argument('--mode', '-m', required=True,
-                    choices=['chat', 'wordcloud', 'report', 'employee', 'list', 'keys', 'decrypt'],
-                    help='导出模式')
+                    choices=['chat', 'wordcloud', 'report', 'employee', 'list', 'keys',
+                             'decrypt', 'chatlab'],
+                    help='导出模式（chatlab = 导出 ChatLab 标准格式，支持断点续传）')
+    ep.add_argument('--format', '-f', choices=['jsonl', 'json'], default='jsonl',
+                    help='chatlab 模式输出格式 (默认: jsonl，支持断点续传)')
+    ep.add_argument('--no-resume', action='store_true',
+                    help='chatlab 模式禁用断点续传')
     ep.add_argument('--chat', help='指定聊天对象 (wordcloud 模式)')
     ep.add_argument('--output', '-o', help='输出路径')
     ep.add_argument('--excel', help='员工 Excel 文件路径 (employee 模式)')
     ep.add_argument('--decrypted-dir', help='解密后的数据目录')
     ep.add_argument('--db-dir', help='微信 db_storage 目录')
+
+    # chatlab-pull
+    cp = sub.add_parser('chatlab-pull',
+                        help='启动 ChatLab Pull 远程数据源服务（供 ChatLab 拉取）')
+    cp.add_argument('--decrypted-dir', help='解密后的数据目录')
+    cp.add_argument('--host', default='127.0.0.1',
+                    help='监听地址 (默认: 127.0.0.1；局域网可填 0.0.0.0)')
+    cp.add_argument('--port', type=int, default=8765, help='监听端口 (默认: 8765)')
+    cp.add_argument('--token', default=None,
+                    help='可选 Bearer Token（设置后 ChatLab 需填相同 Token）')
 
     # harvest-keys
     hp = sub.add_parser('harvest-keys', help='收割 V2 图片 AES 密钥（需微信运行）')
@@ -424,6 +517,8 @@ def main():
         cmd_serve(args)
     elif args.command == 'export':
         cmd_export(args)
+    elif args.command == 'chatlab-pull':
+        cmd_chatlab_pull(args)
     elif args.command == 'harvest-keys':
         cmd_harvest_keys(args)
 
