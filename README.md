@@ -1,6 +1,6 @@
 # WeChat EXP 使用手册
 
-> 版本：2.3.20260824 | 更新日期：2026-08-24 | 适用 WeChat 4.x（已测试 4.1.9 / 4.1.10 / 4.1.12.55）| Windows 10/11
+> 版本：2.3.20260917 | 更新日期：2026-09-17 | 适用 WeChat 4.x（已测试 4.1.9 / 4.1.10 / 4.1.12.55）| Windows 10/11
 
 ---
 
@@ -742,17 +742,17 @@ wechat_exp.exe chatlab-pull --host 0.0.0.0 --port 8765 --token 你的访问令�
 ---
 
 > **技术支持**：如遇到问题，请查看 `docs/开发手册.md` 了解技术细节，或提交 Issue 反馈。  
-> **最后更新**：2026-08-24
+> **最后更新**：2026-09-17
 
 ---
 
 ## 下载地址
 
-- 最新版本：`wechat_exp_2.3.20260824.exe` → [点击下载](https://github.com/sunhanaix/pc_wechat_exp/releases/download/v2.3.20260824/wechat_exp_2.3.20260824.exe)
+- 最新版本：`wechat_exp_2.3.20260917.exe` → [点击下载](https://github.com/sunhanaix/pc_wechat_exp/releases/download/v2.3.20260917/wechat_exp_2.3.20260917.exe)
 
 **源码地址**：[https://github.com/sunhanaix/pc_wechat_exp](https://github.com/sunhanaix/pc_wechat_exp)
 
-> ⚠️ **发布提醒**：请先在 GitHub Releases 上传 `dist/wechat_exp_2.3.20260824.exe`（SHA-256：`1ED585FF8BB4E00C5823BADA04B976932A8062F7910C5B6C4EC15A666A9157CC`）并打上 `v2.3.20260824` 标签，链接方可生效。
+> ⚠️ **发布提醒**：请先在 GitHub Releases 上传 `dist/wechat_exp_2.3.20260917.exe`（SHA-256：`0F9AB41D78BB2325A0E7850AAAC6B2E46DFE99326482FAEF8E1D8DC007456A75`）并打上 `v2.3.20260917` 标签，链接方可生效。
 
 > 反馈问题时请提供：  
 > 1. 程序运行的完整截图或文字输出  
