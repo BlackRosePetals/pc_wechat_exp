@@ -97,6 +97,34 @@ def merge_manifest(manifest, scan):
     return merged
 
 
+def manifest_needs_refresh(decrypted_dirs, manifest_path):
+    """True when the manifest may be stale: any decrypted shard file under
+    decrypted_dirs/message is newer than the manifest file.
+
+    The weekly-report pipeline scans the FULL decrypted archive only when
+    this says True — otherwise the cached shard ranges from the manifest
+    are reused, avoiding a multi-second MIN/MAX/COUNT scan of every shard
+    on every run.
+    """
+    if not os.path.isfile(manifest_path):
+        return True
+    try:
+        manifest_mtime = os.path.getmtime(manifest_path)
+    except OSError:
+        return True
+    for d in decrypted_dirs:
+        msg_dir = os.path.join(d, 'message')
+        if not os.path.isdir(msg_dir):
+            continue
+        for f in list_shards(msg_dir):
+            try:
+                if os.path.getmtime(os.path.join(msg_dir, f)) > manifest_mtime:
+                    return True
+            except OSError:
+                return True
+    return False
+
+
 def _overlaps(entry, date_from, date_to, margin_days):
     start = date.fromisoformat(entry['start'])
     end = date.fromisoformat(entry['end'])

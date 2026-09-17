@@ -176,8 +176,12 @@ def match_employees(employees, contacts, min_score=30):
 
 def run_employee_export(decrypted_dir, excel_path, out_dir, start_ts=None, end_ts=None,
                         keyword=None, min_score=30, name_filter=None, list_only=False,
-                        print_fn=None, progress_fn=None):
-    """主入口：员工批量导出。"""
+                        print_fn=None, progress_fn=None, chats=None):
+    """主入口：员工批量导出。
+
+    chats: 可选，调用方预先 scan_chats() 的结果。传入时可避免本函数再次
+           全量扫描消息库（周报管线中由 weekreport.py 复用一次扫描结果）。
+    """
     if print_fn is None:
         print_fn = print
     if progress_fn is None:
@@ -216,9 +220,10 @@ def run_employee_export(decrypted_dir, excel_path, out_dir, start_ts=None, end_t
             print_fn("指定的姓名未匹配到任何微信联系人")
             return matches, unmatched
 
-    # Scan chats to find matching usernames
+    # Scan chats to find matching usernames (reuse caller-provided scan)
     progress_fn(35, "扫描聊天列表...")
-    chats, _, _ = scan_chats(decrypted_dir)
+    if chats is None:
+        chats, _, _ = scan_chats(decrypted_dir)
     chat_by_username = {c["username"]: c for c in chats}
 
     # Export
