@@ -1,6 +1,6 @@
 # WeChat EXP 使用手册
 
-> 版本：2.3.20260917 | 更新日期：2026-09-17 | 适用 WeChat 4.x（已测试 4.1.9 / 4.1.10 / 4.1.12.55）| Windows 10/11
+> 版本：2.3.20260918 | 更新日期：2026-09-18 | 适用 WeChat 4.x（已测试 4.1.9 / 4.1.10 / 4.1.12.55）| Windows 10/11
 
 ---
 
@@ -305,6 +305,7 @@ WeChat EXP 是一款 Windows 平台下的微信聊天记录**备份、查看与�
 
 1. 打开 ChatLab → **设置 → 数据源 → 添加远程数据源（Pull）**
 2. 地址填入页面上显示的 Url（手机端请使用页面给出的局域网地址，并确保与电脑在同一 WiFi 下）
+   > ChatLab 会自动把填入的地址规范化为 `<地址>/api/v1`（例如填 `http://127.0.0.1:8765` 时它请求 `http://127.0.0.1:8765/api/v1/sessions`）。本服务的端点在**根路径与 `/api/v1` 前缀下都已注册**，两种地址都能直接使用。
 3. 若设置了 Token，在认证一栏填入相同 Token
 4. 浏览会话列表 → 选择要导入的会话 → 点击「立即同步」；之后再次同步会自动增量拉取新消息
 
@@ -737,6 +738,8 @@ wechat_exp.exe chatlab-pull --host 0.0.0.0 --port 8765 --token 你的访问令�
 | `GET /push/messages` | SSE 实时通知（可选，用于秒级触发同步） |
 | `GET /health` | 健康检查 |
 
+> 以上端点在**根路径与 `/api/v1` 前缀下都会响应**：ChatLab 客户端会把数据源地址规范化为 `<地址>/api/v1`（其 `normalizeBaseUrl()` 行为），因此服务同时注册了两套路径，避免出现 `Remote server returned HTTP 404`。
+
 > **提示**：服务读取的是**已解密**的备份数据（`backup/` 或 `output/decrypted`），请先执行一次备份。服务默认仅监听本机，如需局域网访问请加 `--host 0.0.0.0` 并设置 `--token`。
 
 ---
@@ -748,11 +751,11 @@ wechat_exp.exe chatlab-pull --host 0.0.0.0 --port 8765 --token 你的访问令�
 
 ## 下载地址
 
-- 最新版本：`wechat_exp_2.3.20260917.exe` → [点击下载](https://github.com/sunhanaix/pc_wechat_exp/releases/download/v2.3.20260917/wechat_exp_2.3.20260917.exe)
+- 最新版本：`wechat_exp_2.3.20260918.exe` → [点击下载](https://github.com/sunhanaix/pc_wechat_exp/releases/download/v2.3.20260918/wechat_exp_2.3.20260918.exe)
 
 **源码地址**：[https://github.com/sunhanaix/pc_wechat_exp](https://github.com/sunhanaix/pc_wechat_exp)
 
-> ⚠️ **发布提醒**：请先在 GitHub Releases 上传 `dist/wechat_exp_2.3.20260917.exe`（SHA-256：`0F9AB41D78BB2325A0E7850AAAC6B2E46DFE99326482FAEF8E1D8DC007456A75`）并打上 `v2.3.20260917` 标签，链接方可生效。
+> ⚠️ **发布提醒**：请先在 GitHub Releases 上传 `dist/wechat_exp_2.3.20260918.exe`（SHA-256：`14C40C713ECFE9D31B47B6AE8156B8FBF1671977A2F93453340AD58FB7499A07`）并打上 `v2.3.20260918` 标签，链接方可生效。
 
 > 反馈问题时请提供：  
 > 1. 程序运行的完整截图或文字输出  

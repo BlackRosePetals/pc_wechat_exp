@@ -72,7 +72,7 @@
 <div class="container">
 <h1 id="wechat-exp">WeChat EXP 使用手册</h1>
 <blockquote>
-<p>版本：2.3.20260917 | 更新日期：2026-09-17 | 适用 WeChat 4.x（已测试 4.1.9 / 4.1.10 / 4.1.12.55）| Windows 10/11</p>
+<p>版本：2.3.20260918 | 更新日期：2026-09-18 | 适用 WeChat 4.x（已测试 4.1.9 / 4.1.10 / 4.1.12.55）| Windows 10/11</p>
 </blockquote>
 <hr>
 <h2 id="_1">⚠️ 重要警告 — 请务必阅读</h2>
@@ -421,7 +421,10 @@
 <p><strong>ChatLab 端操作：</strong></p>
 <ol>
 <li>打开 ChatLab → <strong>设置 → 数据源 → 添加远程数据源（Pull）</strong></li>
-<li>地址填入页面上显示的 Url（手机端请使用页面给出的局域网地址，并确保与电脑在同一 WiFi 下）</li>
+<li>地址填入页面上显示的 Url（手机端请使用页面给出的局域网地址，并确保与电脑在同一 WiFi 下）<blockquote>
+<p>ChatLab 会自动把填入的地址规范化为 <code>&lt;地址&gt;/api/v1</code>（例如填 <code>http://127.0.0.1:8765</code> 时它请求 <code>http://127.0.0.1:8765/api/v1/sessions</code>）。本服务的端点在<strong>根路径与 <code>/api/v1</code> 前缀下都已注册</strong>，两种地址都能直接使用。</p>
+</blockquote>
+</li>
 <li>若设置了 Token，在认证一栏填入相同 Token</li>
 <li>浏览会话列表 → 选择要导入的会话 → 点击「立即同步」；之后再次同步会自动增量拉取新消息</li>
 </ol>
@@ -894,6 +897,7 @@ wechat_exp.exe chatlab-pull --host 0.0.0.0 --port 8765 --token 你的访问令�
 </tbody>
 </table>
 <blockquote>
+<p>以上端点在<strong>根路径与 <code>/api/v1</code> 前缀下都会响应</strong>：ChatLab 客户端会把数据源地址规范化为 <code>&lt;地址&gt;/api/v1</code>（其 <code>normalizeBaseUrl()</code> 行为），因此服务同时注册了两套路径，避免出现 <code>Remote server returned HTTP 404</code>。</p>
 <p><strong>提示</strong>：服务读取的是<strong>已解密</strong>的备份数据（<code>backup/</code> 或 <code>output/decrypted</code>），请先执行一次备份。服务默认仅监听本机，如需局域网访问请加 <code>--host 0.0.0.0</code> 并设置 <code>--token</code>。</p>
 </blockquote>
 <hr>
@@ -904,11 +908,11 @@ wechat_exp.exe chatlab-pull --host 0.0.0.0 --port 8765 --token 你的访问令�
 <hr>
 <h2 id="_3">下载地址</h2>
 <ul>
-<li>最新版本：<code>wechat_exp_2.3.20260917.exe</code> → <a href="https://github.com/sunhanaix/pc_wechat_exp/releases/download/v2.3.20260917/wechat_exp_2.3.20260917.exe">点击下载</a></li>
+<li>最新版本：<code>wechat_exp_2.3.20260918.exe</code> → <a href="https://github.com/sunhanaix/pc_wechat_exp/releases/download/v2.3.20260918/wechat_exp_2.3.20260918.exe">点击下载</a></li>
 </ul>
 <p><strong>源码地址</strong>：<a href="https://github.com/sunhanaix/pc_wechat_exp">https://github.com/sunhanaix/pc_wechat_exp</a></p>
 <blockquote>
-<p>⚠️ <strong>发布提醒</strong>：请先在 GitHub Releases 上传 <code>dist/wechat_exp_2.3.20260917.exe</code>（SHA-256：<code>0F9AB41D78BB2325A0E7850AAAC6B2E46DFE99326482FAEF8E1D8DC007456A75</code>）并打上 <code>v2.3.20260917</code> 标签，链接方可生效。</p>
+<p>⚠️ <strong>发布提醒</strong>：请先在 GitHub Releases 上传 <code>dist/wechat_exp_2.3.20260918.exe</code>（SHA-256：<code>14C40C713ECFE9D31B47B6AE8156B8FBF1671977A2F93453340AD58FB7499A07</code>）并打上 <code>v2.3.20260918</code> 标签，链接方可生效。</p>
 <p>反馈问题时请提供：<br>
 1. 程序运行的完整截图或文字输出<br>
 2. 微信版本号（设置 → 关于微信）<br>

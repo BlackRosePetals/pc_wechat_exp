@@ -65,9 +65,29 @@ def _lan_ips():
 
 
 def _port_free(host, port):
+    """端口是否可用。
+
+    Windows 下 SO_REUSEADDR 允许绑定"已被占用"的端口（与 Linux 语义不同），
+    会导致误判 → 两个服务抢同一端口。因此先探测是否已有人在监听，再用
+    SO_EXCLUSIVEADDRUSE 做独占绑定测试。
+    """
+    probe_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(0.5)
+    try:
+        if s.connect_ex((probe_host, port)) == 0:
+            return False
+    except OSError:
+        pass
+    finally:
+        s.close()
+
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind((host, port))
         return True
     except OSError:

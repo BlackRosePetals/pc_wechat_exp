@@ -159,7 +159,24 @@ def create_pull_app(decrypted_dir, own_wxid=None, token=None, print_fn=None,
 
     @app.after_request
     def _after(resp):
+        # 记录每个请求：Web 界面日志可据此排查 ChatLab 连接问题
+        try:
+            if request.method != "OPTIONS":
+                print_fn("  %s %s -> %d" % (request.method, request.path, resp.status_code))
+        except Exception:
+            pass
         return _cors(resp)
+
+    @app.errorhandler(404)
+    def _not_found(_e):
+        return _json_response({
+            "error": "not_found",
+            "message": "未知路径: %s" % request.path,
+            "endpoints": ["/sessions", "/sessions/<id>/messages",
+                          "/push/messages", "/health"],
+            "note": "上述端点同时支持根路径与 /api/v1 前缀"
+                    "（ChatLab 客户端会请求 /api/v1/...，请确认使用的是本程序）",
+        }, 404)
 
     @app.route("/", methods=["GET", "OPTIONS"])
     def _root():
@@ -335,6 +352,19 @@ def create_pull_app(decrypted_dir, own_wxid=None, token=None, print_fn=None,
             if sid:
                 per_session[sid] = best
         return per_session
+
+    # ChatLab 客户端会把用户输入的地址规范化：不以 /api/v1 结尾时自动补上
+    # （ChatLab/ChatLab 的 normalizeBaseUrl）。因此同一套端点必须在
+    # 根路径与 /api/v1 前缀下都可用，否则 ChatLab 会报 HTTP 404。
+    for _rule, _view, _methods in (
+            ("/sessions", _sessions, ["GET", "OPTIONS"]),
+            ("/sessions/<path:session_id>/messages", _messages, ["GET", "OPTIONS"]),
+            ("/push/messages", _sse, ["GET"]),
+            ("/health", _health, ["GET", "OPTIONS"]),
+            ("/", _root, ["GET", "OPTIONS"]),
+    ):
+        _v1_rule = "/api/v1" + _rule if _rule != "/" else "/api/v1"
+        app.add_url_rule(_v1_rule, "v1" + _view.__name__, _view, methods=_methods)
 
     helper = {"chats": _chats, "marks": _latest_marks, "cache": cache}
     return app, helper

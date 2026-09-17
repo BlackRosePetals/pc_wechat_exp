@@ -43,6 +43,11 @@
       </div>
     </div>
     <div id="conn-alt" style="display:none;margin-top:10px;color:#8b949e;font-size:12px"></div>
+    <div style="margin-top:12px;color:#8b949e;font-size:12px;line-height:1.7">
+      提示：ChatLab 会自动在地址后补 <code>/api/v1</code>（填 <code>http://127.0.0.1:8765</code> 时它请求的是
+      <code>http://127.0.0.1:8765/api/v1/sessions</code>）。本服务已<b>同时支持根路径与 /api/v1 前缀</b>，
+      两种地址都可以直接填。
+    </div>
   </div>
 </div>
 
@@ -68,6 +73,8 @@
     <tr><td style="padding:6px 8px">GET</td><td style="padding:6px 8px"><code>/push/messages</code></td><td style="padding:6px 8px">SSE 增量推送（可选）</td></tr>
     <tr><td style="padding:6px 8px">GET</td><td style="padding:6px 8px"><code>/health</code></td><td style="padding:6px 8px">健康检查</td></tr>
   </table>
+  <p style="color:#8b949e;font-size:12px;margin:10px 0 0 0">
+    以上端点<strong>同时</strong>注册在 <code>/api/v1/...</code> 前缀下——ChatLab 客户端请求的正是该前缀（它会把填入的地址自动规范化为 <code>&lt;地址&gt;/api/v1</code>），两种写法完全等价。</p>
 </div>
 
 <div class="progress-panel" style="margin-top:16px">
