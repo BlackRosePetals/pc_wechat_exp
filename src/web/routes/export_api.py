@@ -158,16 +158,31 @@ def export_chat():
     fmt = data.get('format', 'txt')
 
     decrypted_dir = _decrypted_dir()
+    # 注意：后台线程没有 Flask 应用上下文，配置必须在此处（请求线程内）取出
+    own_wxid = current_app.config.get('WXID')
     push, gen = create_sse_progress()
 
     def _run():
         try:
-            from chat_list import scan_chats
             from chat_export import export_chat
             from engine.constants import TZ
 
-            push('export', '正在扫描聊天列表...', 0.1)
-            all_chats, _, _ = scan_chats(decrypted_dir)
+            # ChatLab 导出只需 wxid/显示名，走轻量会话扫描（数秒）；
+            # 完整 scan_chats 需遍历全部 Msg_ 表统计消息数，大数据量下很慢。
+            is_chatlab = fmt.lower().startswith('chatlab')
+            all_chats = []
+            if is_chatlab:
+                push('export', '正在扫描聊天列表（轻量模式）...', 0.1)
+                try:
+                    from chatlab_pull_server import fast_chat_list
+                    all_chats = fast_chat_list(decrypted_dir, own_wxid=own_wxid)
+                except Exception as e:
+                    push('export', '轻量扫描失败，回退完整扫描: %s' % e, 0.1)
+                    all_chats = []
+            if not all_chats:
+                from chat_list import scan_chats
+                push('export', '正在扫描聊天列表...', 0.1)
+                all_chats, _, _ = scan_chats(decrypted_dir)
             if not all_chats:
                 # Flat backup layout (no contact/session subdirs)
                 all_chats = _scan_chats_flat(decrypted_dir, contact)
@@ -217,6 +232,33 @@ def export_chat():
 
             def _print(msg):
                 push('export', msg, 0.5)
+
+            # ChatLab 标准格式（JSONL 可导入 ChatLab，支持断点续传）
+            if fmt.lower().startswith('chatlab'):
+                from chatlab_export import export_chatlab
+                sub_fmt = 'json' if fmt.lower().endswith('json') else 'jsonl'
+                raw_name = (display_name_hint or target.get('display_name')
+                            or target.get('username') or 'chat')
+                safe = re.sub(r'[\\/:*?"<>|\s]+', '_', str(raw_name)).strip('_.') or 'chat'
+                out_path = os.path.join(out_dir, 'chatlab_%s.%s' % (safe, sub_fmt))
+                push('export', 'ChatLab 格式导出中（%s）...' % sub_fmt, 0.3)
+                res = export_chatlab(
+                    decrypted_dir, target, out_path, fmt=sub_fmt,
+                    own_wxid=own_wxid,
+                    resume=bool(data.get('resume', True)),
+                    start_ts=start_ts, end_ts=end_ts,
+                    print_fn=_print)
+                fname = os.path.basename(res.get('path') or out_path)
+                total = res.get('count_total') or 0
+                note = '本次新增 %d 条' % (res.get('count_new') or 0)
+                if res.get('resumed'):
+                    note = '断点续传：' + note
+                note += '。导入方式：ChatLab → 导入聊天记录 → 选择该 %s 文件。' % sub_fmt.upper()
+                push.done({'msg_count': total,
+                           'download_url': '/api/export/download/' + fname,
+                           'filename': fname,
+                           'note': note})
+                return
 
             count, filepath = export_chat(target, out_dir,
                                           start_ts=start_ts, end_ts=end_ts,

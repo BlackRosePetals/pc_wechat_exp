@@ -192,5 +192,13 @@ class WizardPage {
       container.innerHTML = '<p style="color:#8b949e;margin:0 0 8px 0">文件路径: ' +
         this.escapeHtml(result.file) + '</p>';
     }
+
+    if (result.note) {
+      const note = document.createElement('p');
+      note.style.cssText = 'color:#8b949e;font-size:12px;margin:10px 0 0 0;' +
+        'max-width:640px;line-height:1.7';
+      note.textContent = result.note;
+      container.appendChild(note);
+    }
   }
 }

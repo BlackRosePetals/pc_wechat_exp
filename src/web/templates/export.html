@@ -10,9 +10,14 @@
     <div style="flex:2"><label>联系人/群聊标识</label><input id="cfg-contact" placeholder="例如: wxid_abc123 或 张三"></div>
     <div style="flex:1"><label>开始日期</label><input id="cfg-start" type="date"></div>
     <div style="flex:1"><label>结束日期</label><input id="cfg-end" type="date"></div>
-    <div style="flex:1"><label>格式</label><select id="cfg-format"><option value="txt">TXT 文本</option><option value="html">HTML</option></select></div>
+    <div style="flex:1"><label>格式</label><select id="cfg-format"><option value="txt">TXT 文本</option><option value="html">HTML</option><option value="chatlab-jsonl">ChatLab JSONL（推荐 · 可导入 ChatLab · 支持断点续传）</option><option value="chatlab-json">ChatLab JSON</option></select></div>
     <div><label>&nbsp;</label><button id="btn-run" class="btn btn-primary">开始导出</button></div>
   </div>
+  <p style="color:#8b949e;font-size:12px;margin:10px 0 0 0">
+    ChatLab 格式：导出为 ChatLab 标准格式（<code>chatlab-jsonl</code> 每行一条，可随时中断并<b>断点续传</b>；
+    <code>chatlab-json</code> 为单文件 JSON）。导出后在 ChatLab 中「导入聊天记录」选择该文件即可。
+    想让 ChatLab 直接拉取（无需导出文件），请使用 <a href="/pull" style="color:#58a6ff">Pull 数据源</a>。
+  </p>
 </div>
 
 <div id="progress-container" class="progress-panel" style="display:none">

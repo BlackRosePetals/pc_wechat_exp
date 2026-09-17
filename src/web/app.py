@@ -81,6 +81,13 @@ def create_app(decrypted_dir: str, wxid: str = None, db_dir: str = None) -> Flas
     except ImportError as e:
         print(f"[WARN] 无法加载清理蓝图 (routes.cleanup_api): {e}")
 
+    # ChatLab Pull data source API (start / stop / status)
+    try:
+        from .routes.pull_api import pull_bp
+        app.register_blueprint(pull_bp)
+    except ImportError as e:
+        print(f"[WARN] 无法加载 Pull 数据源蓝图 (routes.pull_api): {e}")
+
     # JSON error handlers — prevent Flask HTML pages for API routes
     @app.errorhandler(404)
     def _json_404(e):
@@ -117,6 +124,10 @@ def create_app(decrypted_dir: str, wxid: str = None, db_dir: str = None) -> Flas
     @app.route('/export')
     def export_page():
         return render_template('export.html')
+
+    @app.route('/pull')
+    def pull_page():
+        return render_template('pull.html')
 
     @app.route('/wordcloud')
     def wordcloud_page():
