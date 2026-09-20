@@ -247,6 +247,51 @@ def set_db_dir(db_dir: str) -> None:
     os.replace(tmp, path)
 
 
+def get_asr_settings() -> dict:
+    """语音转写相关设置（引擎、本地模型、商业 ASR 凭据等）。"""
+    defaults = {
+        "engine": "local",              # local | baidu
+        "local_model": "Xenova/whisper-base",
+        "language": "zh",               # zh | auto | en ...
+        "simplify": True,               # 简繁转换（Whisper 常输出繁体）
+        "baidu_api_key": "",
+        "baidu_secret_key": "",
+        "baidu_dev_pid": 1537,          # 1537=普通话(纯中文) 1737=英语 1637=粤语 ...
+    }
+    path = _config_path()
+    if not os.path.isfile(path):
+        return defaults
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+    except (ValueError, OSError):
+        return defaults
+    saved = cfg.get("asr", {})
+    if isinstance(saved, dict):
+        defaults.update({k: v for k, v in saved.items() if k in defaults})
+    return defaults
+
+
+def set_asr_settings(settings: dict) -> dict:
+    """合并保存语音转写设置；返回保存后的完整设置。"""
+    current = get_asr_settings()
+    current.update({k: v for k, v in (settings or {}).items() if k in current})
+    path = _config_path()
+    cfg = {}
+    try:
+        if os.path.isfile(path):
+            with open(path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+    except (ValueError, OSError):
+        cfg = {}
+    cfg["asr"] = current
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+    return current
+
 def get_db_dir() -> str | None:
     """Return the _db_dir (WeChat db_storage path) stored in config, or None."""
     path = _config_path()

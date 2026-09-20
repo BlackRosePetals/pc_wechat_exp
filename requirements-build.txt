@@ -9,6 +9,9 @@ requests>=2.28.0
 # Manual generation (README.md → HTML)
 markdown>=3.5.0
 
+# ASR result: traditional -> simplified Chinese conversion
+zhconv>=1.4.3
+
 # Feature-specific (wordcloud, employee export, wrapped report)
 jieba>=0.42.1
 openpyxl>=3.1.0

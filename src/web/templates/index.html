@@ -62,6 +62,30 @@ async function _getTranscriber(onProgress) {
   }
 }
 
+let _asrSettings = null;
+let _asrSettingsAt = 0;
+async function _getAsrSettings(force) {
+  if (!force && _asrSettings && (Date.now() - _asrSettingsAt) < 30000) return _asrSettings;
+  try {
+    const r = await fetch('/api/settings/asr');
+    _asrSettings = await r.json();
+    _asrSettingsAt = Date.now();
+  } catch (e) { /* 用默认值 */ }
+  return _asrSettings || { engine: 'local', language: 'zh', simplify: true };
+}
+
+async function _toSimplified(text) {
+  try {
+    const r = await fetch('/api/asr/simplify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: text }),
+    });
+    const d = await r.json();
+    return d.text || text;
+  } catch (e) { return text; }
+}
+
 async function _modelStatus() {
   try {
     const r = await fetch('/api/asr/status?model=' + encodeURIComponent(_getModel()));
@@ -117,20 +141,33 @@ window.WhisperTranscriber = {
   status: _modelStatus,
   install: _installModel,
   reset() { _transcriber = null; _loading = false; _loadResolvers = []; },
+  settings: _getAsrSettings,
+
   async transcribe(audioUrl, onProgress, options) {
+    const cfg = await _getAsrSettings();
     const t = await _getTranscriber(onProgress);
     if (!t) throw new Error('模型加载失败');
-    // 默认参数针对短语音做了防"复读机"处理：不加这些参数时 whisper-tiny
-    // 容易把一句短语音重复输出几十遍
-    const opts = Object.assign({
+    // 生成参数：语言必须显式指定，否则长语音会崩（实测 32 秒语音不指定
+    // language 时几乎只输出几个字）；no_repeat_* 防止一句话复读几十遍
+    const opts = {
       chunk_length_s: 30,
       stride_length_s: 5,
       no_repeat_ngram_size: 3,
       repetition_penalty: 1.15,
-      max_new_tokens: 256,
-    }, options || {});
+      max_new_tokens: 448,
+    };
+    const lang = (cfg && cfg.language) || 'zh';
+    if (lang && lang !== 'auto') {
+      opts.language = lang;
+      opts.task = 'transcribe';
+    }
+    Object.assign(opts, options || {});
     const result = await t(audioUrl, opts);
-    return (result.text || '').trim();
+    let text = (result.text || '').trim();
+    if (text && cfg && cfg.simplify !== false) {
+      text = await _toSimplified(text);
+    }
+    return text;
   }
 };
 </script>

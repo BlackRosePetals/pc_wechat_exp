@@ -125,6 +125,31 @@ class VoicePlayerComponent {
       if (!transcriber) {
         throw new Error('Whisper 模块未加载，请刷新页面后重试');
       }
+      // 设置里选了商业 ASR（百度）时，走服务端调用，不再用本地模型
+      let cfg = null;
+      try { cfg = await transcriber.settings(); } catch (e) { cfg = null; }
+      if (cfg && cfg.engine === 'baidu') {
+        resultEl.textContent = '正在识别（百度语音识别）…';
+        const resp = await fetch('/api/asr/commercial', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ voice_url: voiceUrl, create_time: 0, local_id: 0 }),
+        });
+        const d = await resp.json().catch(function () { return {}; });
+        if (!resp.ok || d.error) {
+          const msg2 = d.message || ('HTTP ' + resp.status);
+          if (!cfg.has_baidu_key || /未配置百度/.test(msg2)) {
+            resultEl.className = 'vp-trans-result error';
+            resultEl.innerHTML = '百度语音识别未配置：请到 <a href="/settings" target="_blank" ' +
+              'style="color:#58a6ff">设置</a> 页填写 API Key / Secret Key，或把引擎切回「本地模型」。';
+            return;
+          }
+          throw new Error(msg2);
+        }
+        resultEl.textContent = d.text || '未识别到语音内容';
+        resultEl.className = 'vp-trans-result ' + (d.text ? 'success' : 'empty');
+        return;
+      }
       // 模型没下载全时不要硬加载（transformers.js 会抛出难懂的错），直接引导下载
       if (!transcriber.loaded) {
         const st = await transcriber.status();

@@ -462,6 +462,139 @@ def address_book_export():
         headers={'Content-Disposition': 'attachment; filename=address_book.csv'}
     )
 
+@api_bp.route("/settings/asr", methods=["GET"])
+def asr_settings_get():
+    """GET /api/settings/asr — 读取语音转写设置（含本地模型状态，密钥打码）。"""
+    from engine.config_file import get_asr_settings
+    from engine.services.asr_model import DEFAULT_MODEL, model_status
+    from engine.services.asr_commercial import BAIDU_DEV_PIDS
+
+    st = get_asr_settings()
+    key = st.get("baidu_api_key") or ""
+    secret = st.get("baidu_secret_key") or ""
+    out = dict(st)
+    out["baidu_api_key"] = ("*" * max(len(key) - 4, 0) + key[-4:]) if key else ""
+    out["baidu_secret_key"] = ("*" * max(len(secret) - 4, 0) + secret[-4:]) if secret else ""
+    out["has_baidu_key"] = bool(key and secret)
+    out["devPids"] = BAIDU_DEV_PIDS
+    out["localModelStatus"] = model_status(st.get("local_model") or DEFAULT_MODEL)
+    return jsonify(out)
+
+
+@api_bp.route("/settings/asr", methods=["POST"])
+def asr_settings_set():
+    """POST /api/settings/asr — 保存语音转写设置。
+
+    密钥留空表示"不修改"；传 clear_baidu_keys=true 才会清空。
+    """
+    from engine.config_file import get_asr_settings, set_asr_settings
+    data = request.get_json(silent=True) or {}
+    current = get_asr_settings()
+    patch = {}
+    for field in ("engine", "local_model", "language"):
+        if data.get(field) is not None:
+            patch[field] = str(data[field])
+    if data.get("simplify") is not None:
+        patch["simplify"] = bool(data["simplify"])
+    if data.get("baidu_dev_pid") is not None:
+        try:
+            patch["baidu_dev_pid"] = int(data["baidu_dev_pid"])
+        except (TypeError, ValueError):
+            pass
+    if data.get("clear_baidu_keys"):
+        patch["baidu_api_key"] = ""
+        patch["baidu_secret_key"] = ""
+    else:
+        # 打码值（含 *）视为未修改
+        for field in ("baidu_api_key", "baidu_secret_key"):
+            value = data.get(field)
+            if isinstance(value, str) and value and "*" not in value:
+                patch[field] = value.strip()
+    if patch.get("engine") not in (None, "local", "baidu"):
+        return jsonify({"error": "bad_engine", "message": "引擎只能是 local 或 baidu"}), 400
+    saved = set_asr_settings(patch)
+    saved["saved"] = True
+    key = saved.get("baidu_api_key") or ""
+    secret = saved.get("baidu_secret_key") or ""
+    saved["baidu_api_key"] = ("*" * max(len(key) - 4, 0) + key[-4:]) if key else ""
+    saved["baidu_secret_key"] = ("*" * max(len(secret) - 4, 0) + secret[-4:]) if secret else ""
+    saved["has_baidu_key"] = bool(key and secret)
+    if patch.get("engine") == "baidu" and not (key and secret):
+        saved["warning"] = "已切换为百度语音识别，但还没填 API Key / Secret Key，请填写后再试"
+    return jsonify(saved)
+
+
+@api_bp.route("/settings/asr/test", methods=["POST"])
+def asr_settings_test():
+    """POST /api/settings/asr/test — 测试百度语音识别凭据是否可用。"""
+    from engine.config_file import get_asr_settings
+    from engine.services.asr_commercial import test_credentials
+    data = request.get_json(silent=True) or {}
+    current = get_asr_settings()
+    key = (data.get("baidu_api_key") or "").strip()
+    secret = (data.get("baidu_secret_key") or "").strip()
+    if not key or "*" in key:
+        key = current.get("baidu_api_key") or ""
+    if not secret or "*" in secret:
+        secret = current.get("baidu_secret_key") or ""
+    return jsonify(test_credentials(key, secret))
+
+
+@api_bp.route("/asr/simplify", methods=["POST"])
+def asr_simplify():
+    """POST /api/asr/simplify — 繁体转简体（本地模型输出常为繁体）。"""
+    from engine.services.asr_commercial import to_simplified
+    data = request.get_json(silent=True) or {}
+    return jsonify({"text": to_simplified(data.get("text") or "")})
+
+
+@api_bp.route("/asr/commercial", methods=["POST"])
+def asr_commercial():
+    """POST /api/asr/commercial — 用商业 ASR（百度）识别某条语音。
+
+    body: {"voice_url": "/api/voice?...", "path": "...", "create_time": 0,
+           "local_id": 0, "chat": ""}（voice_url 也可直接给完整相对地址）
+    """
+    from urllib.parse import parse_qs, urlparse
+    from engine.config_file import get_asr_settings
+    from engine.services.asr_commercial import AsrError, recognize_wav
+    from engine.services.media import get_voice_wav_path
+
+    decrypted_dir, _, db_dir = _cfg()
+    data = request.get_json(silent=True) or {}
+    params = {}
+    voice_url = data.get("voice_url") or ""
+    if voice_url:
+        qs = parse_qs(urlparse(voice_url).query)
+        for k, v in qs.items():
+            params[k] = v[0] if v else ""
+    for k in ("path", "chat"):
+        if data.get(k):
+            params[k] = data[k]
+    for k in ("create_time", "local_id"):
+        if data.get(k) not in (None, ""):
+            params[k] = data[k]
+    try:
+        create_time = int(params["create_time"]) if params.get("create_time") else None
+        local_id = int(params["local_id"]) if params.get("local_id") else None
+    except (TypeError, ValueError):
+        return jsonify({"error": "bad_params", "message": "create_time / local_id 必须是整数"}), 400
+
+    wav = get_voice_wav_path(decrypted_dir, params.get("path"), create_time, local_id,
+                             db_dir=db_dir, chat=params.get("chat"))
+    if not wav:
+        return jsonify({"error": "voice_not_found", "message": "找不到这条语音的音频文件"}), 404
+
+    st = get_asr_settings()
+    try:
+        out = recognize_wav(wav, st.get("baidu_api_key") or "", st.get("baidu_secret_key") or "",
+                            dev_pid=st.get("baidu_dev_pid") or 1537)
+    except AsrError as e:
+        return jsonify({"error": "asr_failed", "message": str(e)}), 502
+    out["wav"] = os.path.basename(wav)
+    return jsonify(out)
+
+
 @api_bp.route("/asr/model/<path:relpath>")
 def asr_model_file(relpath):
     """GET /api/asr/model/<model>/<file> — 提供 ASR 模型文件（用户目录优先，其次内置）。"""
