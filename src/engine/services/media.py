@@ -1,4 +1,5 @@
 """Media file resolution and serving."""
+import hashlib as _hashlib
 import os
 import re
 import sqlite3
@@ -1409,17 +1410,19 @@ def decrypt_emoticon_aes_cbc(data: bytes, aes_key_hex: str):
 
 def serve_voice(decrypted_dir: str, voice_path: str,
                 create_time: int = None, local_id: int = None,
-                db_dir: str = None):
+                db_dir: str = None, chat: str = None):
     """Flask response: serve a voice file (SILK or converted WAV).
 
     Searches cached voice directories first. If the file isn't found and
-    create_time+local_id are provided, attempts on-the-fly extraction from
-    the VoiceInfo table in media_0.db.
+    create_time+local_id are provided, extracts the voice from the VoiceInfo
+    table —— 遍历所有 media_*.db 分片（含回源按需解密）。
     """
     if not voice_path:
         abort(404)
 
     filename = os.path.basename(voice_path)
+    cache_name = _voice_cache_filename(voice_path, create_time, local_id)
+    lookup_names = [n for n in (filename, cache_name) if n]
 
     # Search both new and old voice cache locations
     search_dirs = [
@@ -1430,86 +1433,152 @@ def serve_voice(decrypted_dir: str, voice_path: str,
     silk_file = None
     wav_file = None
     for d in search_dirs:
-        candidate_silk = os.path.join(d, filename)
-        candidate_wav = os.path.splitext(candidate_silk)[0] + '.wav'
-        if os.path.isfile(candidate_wav) and os.path.getsize(candidate_wav) > 0:
-            wav_file = candidate_wav
-            break
-        if os.path.isfile(candidate_silk):
-            silk_file = candidate_silk
-            wav_file = candidate_wav
+        for name in lookup_names:
+            candidate_silk = os.path.join(d, name)
+            candidate_wav = os.path.splitext(candidate_silk)[0] + '.wav'
+            if os.path.isfile(candidate_wav) and os.path.getsize(candidate_wav) > 0:
+                wav_file = candidate_wav
+                break
+            if os.path.isfile(candidate_silk):
+                silk_file = candidate_silk
+                wav_file = candidate_wav
+                break
+        if silk_file or wav_file:
             break
 
-    # Fallback: extract from VoiceInfo table on-the-fly
+    # Fallback: extract from VoiceInfo tables on-the-fly (all media shards)
     if not silk_file and not wav_file and create_time is not None and local_id is not None:
         silk_file = _extract_voice_from_db(decrypted_dir, create_time, local_id,
-                                           db_dir=db_dir)
+                                           db_dir=db_dir, chat=chat,
+                                           cache_key=cache_name or None)
         if silk_file and os.path.isfile(silk_file):
             wav_file = os.path.splitext(silk_file)[0] + '.wav'
 
     if wav_file and not silk_file and os.path.isfile(wav_file):
-        return send_file(wav_file, mimetype='audio/wav')
+        return send_file(os.path.abspath(wav_file), mimetype='audio/wav')
 
     if silk_file:
         wav_path = _silk_to_wav(silk_file, wav_file)
         if wav_path and os.path.isfile(wav_path):
-            return send_file(wav_path, mimetype='audio/wav')
+            return send_file(os.path.abspath(wav_path), mimetype='audio/wav')
         print(f"  [WARN] SILK→WAV conversion failed for: {silk_file}")
-        return send_file(silk_file, mimetype='application/octet-stream',
+        return send_file(os.path.abspath(silk_file), mimetype='application/octet-stream',
                          as_attachment=True, download_name=os.path.basename(silk_file))
 
     abort(404)
 
 
-def _extract_voice_from_db(decrypted_dir: str, create_time: int,
-                           local_id: int, db_dir: str = None) -> str:
-    """Extract voice data from VoiceInfo table and cache to disk.
+def _voice_cache_filename(voice_path: str, create_time=None, local_id=None) -> str:
+    """给语音缓存文件起名。
 
-    Looks for media_0.db first in the decrypted message directory,
-    then (if db_dir given) tries to decrypt it from the source on-the-fly.
-
-    Returns the path to the cached .silk file, or None.
+    前端传来的 path 经常不是文件名，而是 msg_content 的十六进制 blob，
+    这时直接用 blob 当缓存键，第二次请求就能命中缓存。
     """
-    import sqlite3 as _sqlite3
+    base = os.path.basename(voice_path or "")
+    if len(base) >= 20 and all(c in "0123456789abcdefABCDEF" for c in base):
+        # 前端传的常是 msg_content 的十六进制 blob（几百字符），
+        # 直接当文件名会超出 Windows 260 字符路径上限，改用哈希
+        return _hashlib.md5(base.encode("utf-8", "ignore")).hexdigest() + ".silk"
+    if create_time and local_id:
+        return "%s_%s.silk" % (create_time, local_id)
+    return ""
 
-    candidates = [os.path.join(decrypted_dir, "message", "media_0.db")]
 
-    # If not found in decrypted dir, try to decrypt from source on-the-fly
-    if db_dir and (not os.path.isfile(candidates[0])):
-        src_db = os.path.join(db_dir, "message", "media_0.db")
-        if os.path.isfile(src_db):
-            tmp_db = _decrypt_media_db_on_the_fly(src_db, decrypted_dir)
-            if tmp_db:
-                candidates.insert(0, tmp_db)
+def _media_db_search_order(decrypted_dir: str, db_dir: str = None):
+    """语音查询要遍历的 media_*.db 顺序。
 
-    for media_db in candidates:
-        if not os.path.isfile(media_db):
+    微信 4.x 把语音分散在多个 media_*.db 分片（最近的往往在 media_1.db），
+    所以必须逐个分片查；解密副本比源库旧时，再按需解密源库分片补查。
+    """
+    ordered = []
+    msg_dir = os.path.join(decrypted_dir, "message")
+    if os.path.isdir(msg_dir):
+        for name in sorted(os.listdir(msg_dir)):
+            if name.startswith("media_") and name.endswith(".db"):
+                ordered.append(os.path.join(msg_dir, name))
+    if not db_dir or not os.path.isdir(os.path.join(db_dir, "message")):
+        return ordered
+
+    src_msg = os.path.join(db_dir, "message")
+    stale = []
+    for name in sorted(os.listdir(src_msg)):
+        if not (name.startswith("media_") and name.endswith(".db")):
             continue
+        src = os.path.join(src_msg, name)
+        dec = os.path.join(msg_dir, name)
+        try:
+            src_mtime = os.path.getmtime(src)
+            dec_mtime = os.path.getmtime(dec) if os.path.isfile(dec) else 0
+        except OSError:
+            continue
+        if dec_mtime >= src_mtime:
+            continue  # 解密副本不比源库旧，无需重复解密
+        stale.append((src_mtime, src))
+    stale.sort(reverse=True)
+    for _mtime, src in stale:
+        dec = _decrypt_media_db_on_the_fly(src, decrypted_dir)
+        if dec and os.path.isfile(dec):
+            ordered.append(dec)
+    return ordered
+
+
+def _query_voice_blob(media_db: str, create_time: int, local_id: int,
+                      chat: str = None):
+    """在单个 media_*.db 里取语音数据（给了会话名则优先精确匹配）。"""
+    import sqlite3 as _sqlite3
+    if not os.path.isfile(media_db):
+        return None
+    try:
+        conn = _sqlite3.connect("file:%s?mode=ro" % media_db, uri=True)
+    except _sqlite3.Error:
         try:
             conn = _sqlite3.connect(media_db)
-            row = conn.execute(
-                "SELECT voice_data FROM VoiceInfo WHERE create_time=? AND local_id=?",
-                (create_time, local_id)
-            ).fetchone()
-            conn.close()
         except _sqlite3.Error:
-            continue
+            return None
+    try:
+        if chat:
+            try:
+                row = conn.execute(
+                    "SELECT v.voice_data FROM VoiceInfo v "
+                    "JOIN Name2Id n ON n.rowid = v.chat_name_id "
+                    "WHERE n.user_name = ? AND v.create_time = ? AND v.local_id = ?",
+                    (chat, create_time, local_id)).fetchone()
+                if row and isinstance(row[0], bytes) and len(row[0]) >= 10:
+                    return row[0]
+            except _sqlite3.Error:
+                pass
+        row = conn.execute(
+            "SELECT voice_data FROM VoiceInfo WHERE create_time=? AND local_id=?",
+            (create_time, local_id)).fetchone()
+        return row[0] if row else None
+    except _sqlite3.Error:
+        return None
+    finally:
+        conn.close()
 
-        if not row or not row[0]:
-            continue
 
-        voice_data = row[0]
-        if not isinstance(voice_data, bytes) or len(voice_data) < 10:
-            continue
+def _extract_voice_from_db(decrypted_dir: str, create_time: int,
+                           local_id: int, db_dir: str = None,
+                           chat: str = None, cache_key: str = None) -> str:
+    """从 media_*.db 的 VoiceInfo 中取出语音并缓存成 .silk。
 
+    遍历**所有** media_*.db 分片（旧实现只查 media_0.db，导致放在
+    media_1.db 里的语音播放/转写一律 404），解密副本过期时回源按需解密。
+    """
+    if create_time is None or local_id is None:
+        return None
+    for media_db in _media_db_search_order(decrypted_dir, db_dir):
+        blob = _query_voice_blob(media_db, create_time, local_id, chat)
+        if not isinstance(blob, bytes) or len(blob) < 10:
+            continue
         output_dir = os.path.join(decrypted_dir, "media", "voice")
         os.makedirs(output_dir, exist_ok=True)
-        silk_file = os.path.join(output_dir, f'{create_time}_{local_id}.silk')
+        name = cache_key or _voice_cache_filename("", create_time, local_id)
+        silk_file = os.path.join(output_dir, name)
         if not os.path.isfile(silk_file):
-            with open(silk_file, 'wb') as f:
-                f.write(voice_data)
+            with open(silk_file, "wb") as f:
+                f.write(blob)
         return silk_file
-
     return None
 
 
@@ -1607,8 +1676,12 @@ def _silk_to_wav(silk_path: str, wav_path: str) -> str:
         return None
 
 
-def transcribe_voice(decrypted_dir: str, voice_path: str) -> str:
+def transcribe_voice(decrypted_dir: str, voice_path: str, create_time: int = None,
+                     local_id: int = None, db_dir: str = None, chat: str = None) -> str:
     """Convert voice SILK to WAV and transcribe using available speech recognition.
+
+    和 serve_voice 一样：缓存目录找不到时，会去所有 media_*.db 分片里
+    按 (create_time, local_id) 取语音（含回源按需解密）。
 
     Returns the transcription text, or raises ValueError with a user-friendly message.
     """
@@ -1616,6 +1689,8 @@ def transcribe_voice(decrypted_dir: str, voice_path: str) -> str:
         raise ValueError('voice_path required')
 
     filename = os.path.basename(voice_path)
+    cache_name = _voice_cache_filename(voice_path, create_time, local_id)
+    lookup_names = [n for n in (filename, cache_name) if n]
 
     search_dirs = [
         os.path.join(decrypted_dir, "media", "voice"),
@@ -1624,10 +1699,18 @@ def transcribe_voice(decrypted_dir: str, voice_path: str) -> str:
 
     silk_file = None
     for d in search_dirs:
-        candidate = os.path.join(d, filename)
-        if os.path.isfile(candidate):
-            silk_file = candidate
+        for name in lookup_names:
+            candidate = os.path.join(d, name)
+            if os.path.isfile(candidate):
+                silk_file = candidate
+                break
+        if silk_file:
             break
+
+    if not silk_file:
+        silk_file = _extract_voice_from_db(decrypted_dir, create_time, local_id,
+                                           db_dir=db_dir, chat=chat,
+                                           cache_key=cache_name or None)
 
     if not silk_file:
         raise ValueError('语音文件不存在')

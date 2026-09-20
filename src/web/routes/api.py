@@ -143,7 +143,7 @@ def voice():
     local_id = request.args.get('local_id', type=int)
     return serve_voice(decrypted_dir, path,
                        create_time=create_time, local_id=local_id,
-                       db_dir=db_dir)
+                       db_dir=db_dir, chat=request.args.get('chat') or None)
 
 
 @api_bp.route('/voice/transcribe')
@@ -151,12 +151,17 @@ def voice_transcribe():
     """Transcribe voice to text.
     Query params: path (voice_path from media_info).
     """
-    decrypted_dir, _, _ = _cfg()
+    decrypted_dir, _, db_dir = _cfg()
     path = request.args.get('path', '')
     if not path:
         return jsonify({'error': 'path required'}), 400
     try:
-        text = transcribe_voice(decrypted_dir, path)
+        text = transcribe_voice(
+            decrypted_dir, path,
+            create_time=request.args.get('create_time', type=int),
+            local_id=request.args.get('local_id', type=int),
+            db_dir=db_dir,
+            chat=request.args.get('chat') or None)
         return jsonify({'text': text})
     except ValueError as e:
         return jsonify({'error': str(e)}), 400

@@ -72,7 +72,7 @@
 <div class="container">
 <h1 id="wechat-exp">WeChat EXP 使用手册</h1>
 <blockquote>
-<p>版本：2.4.20260920 | 更新日期：2026-09-20 | 适用 WeChat 4.x（已测试 4.1.9 / 4.1.10 / 4.1.12.55 / 4.1.15.11）| Windows 10/11</p>
+<p>版本：2.5.20260920 | 更新日期：2026-09-20 | 适用 WeChat 4.x（已测试 4.1.9 / 4.1.10 / 4.1.12.55 / 4.1.15.11）| Windows 10/11</p>
 </blockquote>
 <hr>
 <h2 id="_1">⚠️ 重要警告 — 请务必阅读</h2>
@@ -757,21 +757,32 @@
 3. 等待提取完成后，重新点击「一键备份」</p>
 <h3 id="q7v2">Q7：图片显示"V2加密图片，暂不支持解码"</h3>
 <p>详见<a href="#5-v2-图片显示问题">第 5 章</a>的完整说明。</p>
-<h3 id="q8">Q8：页面显示空白或点击按钮没反应</h3>
+<h3 id="q8-apivoice-404">Q8：语音消息播放失败（网页控制台出现 <code>/api/voice ... 404</code>）</h3>
+<p><strong>原因</strong>：微信 4.x 把语音数据分散存放在多个 <code>media_*.db</code> 分片里（<code>media_0.db</code>、<code>media_1.db</code> …），<br>
+较新的语音通常落在 <code>media_1.db</code>。早期版本只在 <code>media_0.db</code> 里找 → 找不到就返回 404。</p>
+<p><strong>已修复（v2.5.20260920 起）</strong>：</p>
+<ol>
+<li>播放语音时会遍历<strong>所有</strong> <code>media_*.db</code> 分片查 <code>VoiceInfo</code> 表</li>
+<li>解密副本比源库旧时，会<strong>自动回源按需解密</strong>该分片再查（不用重新做整个备份）</li>
+<li>找到的语音会自动缓存到 <code>&lt;备份目录&gt;/media/voice/</code>，第二次播放瞬间响应</li>
+<li>语音转写（转文字）走同一套查找逻辑（转写本身仍需你自行安装 Whisper：<code>pip install openai-whisper</code>）</li>
+</ol>
+<p><strong>如果仍失败</strong>：说明该条语音不在现有备份里 —— 重新做一次「一键备份」（备份会刷新 <code>media_*.db</code>），再播放即可。</p>
+<h3 id="q9">Q9：页面显示空白或点击按钮没反应</h3>
 <p><strong>解决方法</strong>：<br>
 1. 按 <code>Ctrl+F5</code> 强制刷新页面<br>
 2. 尝试更换浏览器（建议使用 Chrome 或 Edge）<br>
 3. 关闭并重新运行 <code>wechat_exp.exe</code></p>
-<h3 id="q9">Q9：如何备份多个微信账号</h3>
+<h3 id="q10">Q10：如何备份多个微信账号</h3>
 <p>程序会自动检测第一个微信账号。如需切换账号：<br>
 1. 在微信中登录目标账号<br>
 2. 重新运行程序<br>
 3. 点击「一键备份」</p>
-<h3 id="q10">Q10：备份的文件存在哪里</h3>
+<h3 id="q11">Q11：备份的文件存在哪里</h3>
 <p>所有备份文件保存在 <code>wechat_exp.exe</code> 所在目录下的 <code>backup\</code> 文件夹中。每次备份会创建一个以日期命名的子文件夹（如 <code>backup\2026-05-28\</code>）。</p>
-<h3 id="q11">Q11：备份会占用多少空间</h3>
+<h3 id="q12">Q12：备份会占用多少空间</h3>
 <p>与微信数据目录的大小相近。通常首次备份需要 2-10 GB。后续增量备份（只备份新增数据）占用空间较小。</p>
-<h3 id="q12">Q12：程序会联网上传我的数据吗</h3>
+<h3 id="q13">Q13：程序会联网上传我的数据吗</h3>
 <p><strong>不会。</strong> 本程序完全在本地运行，不会将您的任何聊天数据、个人信息上传到互联网。所有数据保留在您的电脑上。</p>
 <hr>
 <h2 id="7">7. 附录：命令行参考（高级用户）</h2>
@@ -1014,11 +1025,11 @@ wechat_exp.exe import-keys --key &quot;message_0.db=&lt;64位hex&gt;&quot; --for
 <hr>
 <h2 id="_3">下载地址</h2>
 <ul>
-<li>最新版本：<code>wechat_exp_2.4.20260920.exe</code> → <a href="https://github.com/sunhanaix/pc_wechat_exp/releases/download/v2.4.20260920/wechat_exp_2.4.20260920.exe">点击下载</a></li>
+<li>最新版本：<code>wechat_exp_2.5.20260920.exe</code> → <a href="https://github.com/sunhanaix/pc_wechat_exp/releases/download/v2.5.20260920/wechat_exp_2.5.20260920.exe">点击下载</a></li>
 </ul>
 <p><strong>源码地址</strong>：<a href="https://github.com/sunhanaix/pc_wechat_exp">https://github.com/sunhanaix/pc_wechat_exp</a></p>
 <blockquote>
-<p>⚠️ <strong>发布提醒</strong>：请先在 GitHub Releases 上传 <code>dist/wechat_exp_2.4.20260920.exe</code>（SHA-256：<code>38073F279F932AB0683A2BA38BB51AF258C8C07970BEFA0B2EC1D6CBED670F25</code>）并打上 <code>v2.4.20260920</code> 标签，链接方可生效。</p>
+<p>⚠️ <strong>发布提醒</strong>：请先在 GitHub Releases 上传 <code>dist/wechat_exp_2.5.20260920.exe</code>（SHA-256：<code>30C74CD628B0545D7E1F882D07180499194DFE92CB0708311A89DBF150D608B2</code>）并打上 <code>v2.5.20260920</code> 标签，链接方可生效。</p>
 <p>反馈问题时请提供：<br>
 1. 程序运行的完整截图或文字输出<br>
 2. 微信版本号（设置 → 关于微信）<br>

@@ -59,6 +59,12 @@ const api = {
     let url = `/api/voice?path=${encodeURIComponent(path)}`;
     if (createTime) url += `&create_time=${createTime}`;
     if (localId) url += `&local_id=${localId}`;
+    // 带上当前会话，便于后端在多个 media 分片里精确匹配同 local_id 的语音
+    try {
+      if (typeof Store !== 'undefined' && Store.data && Store.data.activeChat) {
+        url += `&chat=${encodeURIComponent(Store.data.activeChat.id)}`;
+      }
+    } catch (e) { /* ignore */ }
     return url;
   },
   addressBook(params) {
