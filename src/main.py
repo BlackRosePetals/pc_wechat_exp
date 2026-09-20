@@ -173,6 +173,82 @@ def cmd_serve(args):
     run_server(decrypted, wxid=wxid, db_dir=db_dir, host=args.host, port=args.port)
 
 
+def cmd_import_keys(args):
+    """手动输入数据库密钥：校验 -> 保存 -> 供其它功能使用。"""
+    import os as _os
+    from engine.manual_keys import (apply_entries, format_results, match_entries,
+                                    parse_entries, status)
+
+    db_dir = getattr(args, "db_dir", None)
+    if not db_dir or not _os.path.isdir(db_dir):
+        try:
+            from engine.config_file import get_db_dir
+            db_dir = get_db_dir() or None
+        except Exception:
+            db_dir = None
+    if not db_dir or not _os.path.isdir(db_dir):
+        try:
+            from engine.utils import find_all_wechat_data_dirs
+            dirs = find_all_wechat_data_dirs()
+            if dirs:
+                db_dir = dirs[0]["db_path"]
+        except Exception:
+            dirs = []
+    if not db_dir or not _os.path.isdir(db_dir):
+        print("错误: 未找到微信数据目录 (db_storage)，请用 --db-dir 指定")
+        return
+
+    print("微信数据目录: " + db_dir)
+    st = status(db_dir)
+    print("数据库 %d 个：已就绪 %d，缺少密钥 %d，密钥不匹配 %d"
+          % (st["total"], st["verified"], st["missing"], st["invalid"]))
+
+    if getattr(args, "list", False):
+        for d in st["databases"]:
+            flag = "OK " if d["verified"] else ("BAD" if d["hasKey"] else "---")
+            print("  [%s] %-32s %6s MB" % (flag, d["rel"], d["sizeMb"]))
+        return
+
+    text_parts = []
+    if getattr(args, "file", None):
+        if not _os.path.isfile(args.file):
+            print("错误: 密钥文件不存在: " + args.file)
+            return
+        with open(args.file, "r", encoding="utf-8") as f:
+            text_parts.append(f.read())
+    if getattr(args, "key", None):
+        text_parts.extend(args.key)
+    text = "\n".join(text_parts)
+    if not text.strip():
+        print("请用 --file 或 --key 提供密钥，示例：")
+        print("  wechat_exp.exe import-keys --key \"message_0.db=<64位hex>\"")
+        print("  wechat_exp.exe import-keys --file keys.txt")
+        return
+
+    entries = parse_entries(text)
+    if not entries:
+        print("没有解析到任何密钥行")
+        return
+    print("解析到 %d 条密钥，开始校验..." % len(entries))
+
+    if getattr(args, "dry_run", False):
+        results = match_entries(db_dir, entries)
+        print(format_results(results))
+        ok = sum(1 for r in results if r["status"] == "matched")
+        print("校验通过 %d/%d（未保存，--dry-run）" % (ok, len(entries)))
+        return
+
+    out = apply_entries(db_dir, entries, force=bool(getattr(args, "force", False)))
+    print(format_results(out["results"]))
+    print("已保存 %d 个数据库的密钥到 .wechat_exp_config.json" % out["saved"])
+    st = out["status"]
+    print("当前覆盖：已就绪 %d/%d，缺少 %d，校验失败 %d"
+          % (st["verified"], st["total"], st["missing"], st["invalid"]))
+    if st["missing"] == 0:
+        print("全部数据库密钥就绪，现在可以运行: wechat_exp.exe export -m decrypt")
+    else:
+        print("提示: 仍缺少密钥的数据库可用界面「手动输入密钥」继续补充")
+
 def cmd_chatlab_pull(args):
     """启动 ChatLab Pull 远程数据源服务。"""
     from engine.config_file import get_backup_wxid
@@ -492,6 +568,18 @@ def main():
     cp.add_argument('--token', default=None,
                     help='可选 Bearer Token（设置后 ChatLab 需填相同 Token）')
 
+    # import-keys
+    kp = sub.add_parser('import-keys',
+                        help='手动输入数据库密钥（已有密钥时使用，自动校验并保存）')
+    kp.add_argument('--file', '-f', help='密钥文本文件（每行一条，写法见 README）')
+    kp.add_argument('--key', '-k', action='append', default=None,
+                    help='直接指定一条密钥，可重复；形如 message_0.db=<64位hex> 或只写密钥')
+    kp.add_argument('--db-dir', help='微信 db_storage 目录（默认自动检测）')
+    kp.add_argument('--force', action='store_true',
+                    help='强制保存未通过校验的密钥（需该行写明数据库名）')
+    kp.add_argument('--dry-run', action='store_true', help='只校验不保存')
+    kp.add_argument('--list', action='store_true', help='仅显示当前密钥覆盖情况')
+
     # harvest-keys
     hp = sub.add_parser('harvest-keys', help='收割 V2 图片 AES 密钥（需微信运行）')
     hp.add_argument('--decrypted-dir', help='解密后的数据目录')
@@ -519,6 +607,8 @@ def main():
         cmd_export(args)
     elif args.command == 'chatlab-pull':
         cmd_chatlab_pull(args)
+    elif args.command == 'import-keys':
+        cmd_import_keys(args)
     elif args.command == 'harvest-keys':
         cmd_harvest_keys(args)
 

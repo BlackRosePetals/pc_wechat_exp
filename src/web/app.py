@@ -81,6 +81,13 @@ def create_app(decrypted_dir: str, wxid: str = None, db_dir: str = None) -> Flas
     except ImportError as e:
         print(f"[WARN] 无法加载清理蓝图 (routes.cleanup_api): {e}")
 
+    # Manual key entry API (paste keys by hand)
+    try:
+        from .routes.keys_api import keys_bp
+        app.register_blueprint(keys_bp)
+    except ImportError as e:
+        print(f"[WARN] 无法加载手动密钥蓝图 (routes.keys_api): {e}")
+
     # ChatLab Pull data source API (start / stop / status)
     try:
         from .routes.pull_api import pull_bp
@@ -128,6 +135,10 @@ def create_app(decrypted_dir: str, wxid: str = None, db_dir: str = None) -> Flas
     @app.route('/pull')
     def pull_page():
         return render_template('pull.html')
+
+    @app.route('/keys')
+    def manual_keys_page():
+        return render_template('keys.html')
 
     @app.route('/wordcloud')
     def wordcloud_page():

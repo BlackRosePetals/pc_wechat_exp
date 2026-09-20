@@ -189,6 +189,42 @@ def set_db_keys(keys: dict, db_dir: str = '') -> None:
     os.replace(tmp, path)
 
 
+def remove_db_keys(rels) -> int:
+    """Delete stored keys for the given db relative paths.
+
+    Accepts an iterable of relative paths (either separator). Unknown entries
+    are ignored. Returns the number of entries actually removed.
+    """
+    path = _config_path()
+    if not os.path.isfile(path):
+        return 0
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            cfg = json.load(f)
+    except (ValueError, OSError):
+        return 0
+    keys = cfg.get('db_keys', {})
+    if not isinstance(keys, dict) or not keys:
+        return 0
+    wanted = {str(r).replace('/', '\\') for r in rels}
+    wanted |= {str(r) for r in rels}
+    removed = 0
+    for k in list(keys.keys()):
+        if k in wanted or k.replace('/', '\\') in wanted:
+            keys.pop(k, None)
+            removed += 1
+    if removed:
+        cfg['db_keys'] = keys
+        try:
+            tmp = path + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(cfg, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, path)
+        except OSError:
+            return 0
+    return removed
+
+
 def get_db_dir() -> str | None:
     """Return the _db_dir (WeChat db_storage path) stored in config, or None."""
     path = _config_path()
