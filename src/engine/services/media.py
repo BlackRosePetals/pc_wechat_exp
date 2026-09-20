@@ -1664,6 +1664,48 @@ def decrypt_emoticon_aes_cbc(data: bytes, aes_key_hex: str):
         return None
 
 
+def get_voice_wav_path(decrypted_dir: str, voice_path: str = None, create_time=None,
+                       local_id=None, db_dir: str = None, chat: str = None):
+    """取某条语音的 WAV 路径（缓存优先；必要时从 media 分片提取并转码）。
+
+    供商业 ASR（百度等）复用，避免重复实现一遍查找逻辑。
+    """
+    if not decrypted_dir:
+        return None
+    decrypted_dir = os.path.abspath(decrypted_dir)
+    filename = os.path.basename(voice_path or "")
+    cache_name = _voice_cache_filename(voice_path or "", create_time, local_id)
+    names = [n for n in (filename, cache_name) if n]
+    search_dirs = [
+        os.path.join(decrypted_dir, "media", "voice"),
+        os.path.join(os.path.dirname(decrypted_dir), "voice"),
+    ]
+    for d in search_dirs:
+        for n in names:
+            wav = os.path.splitext(os.path.join(d, n))[0] + ".wav"
+            if os.path.isfile(wav) and os.path.getsize(wav) > 0:
+                return wav
+    silk = None
+    for d in search_dirs:
+        for n in names:
+            p = os.path.join(d, n)
+            if os.path.isfile(p) and p.lower().endswith(".silk"):
+                silk = p
+                break
+        if silk:
+            break
+    if not silk and create_time is not None and local_id is not None:
+        silk = _extract_voice_from_db(decrypted_dir, create_time, local_id,
+                                      db_dir=db_dir, chat=chat,
+                                      cache_key=cache_name or None)
+    if not silk:
+        return None
+    wav = os.path.splitext(silk)[0] + ".wav"
+    if os.path.isfile(wav) and os.path.getsize(wav) > 0:
+        return wav
+    converted = _silk_to_wav(silk, wav)
+    return converted if converted and os.path.isfile(converted) else None
+
 def serve_voice(decrypted_dir: str, voice_path: str,
                 create_time: int = None, local_id: int = None,
                 db_dir: str = None, chat: str = None):

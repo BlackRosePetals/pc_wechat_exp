@@ -142,6 +142,10 @@ def create_app(decrypted_dir: str, wxid: str = None, db_dir: str = None) -> Flas
     def manual_keys_page():
         return render_template('keys.html')
 
+    @app.route('/settings')
+    def settings_page():
+        return render_template('settings.html')
+
     @app.route('/wordcloud')
     def wordcloud_page():
         return render_template('wordcloud.html')
