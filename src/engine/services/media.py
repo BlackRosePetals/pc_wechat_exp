@@ -987,6 +987,172 @@ def _collect_image_aeskey(decrypted_dir: str, md5: str) -> str:
     return None
 
 
+def _sniff_image_mime(head: bytes) -> str:
+    """根据文件头判断图片 MIME（返回 "application/octet-stream" 表示不是可直接展示的图片）。"""
+    if not head:
+        return "application/octet-stream"
+    if head[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if head[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if head[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    if head[:2] == b"BM":
+        return "image/bmp"
+    return "application/octet-stream"
+
+
+def tools_dir() -> str:
+    """本程序的 tools 目录（放 ffmpeg.exe / silk_decoder.exe 的地方）。
+
+    打包运行时 = exe 同目录的 tools\\；源码运行时 = 项目根目录的 tools\\。
+    """
+    import sys as _sys
+    if getattr(_sys, "frozen", False):
+        return os.path.join(os.path.dirname(os.path.abspath(_sys.executable)), "tools")
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))))
+    return os.path.join(project_root, "tools")
+
+
+def _ffmpeg_search_paths():
+    """ffmpeg 的候选位置（按优先级）；每次调用都重新探测，用户放进去即可生效。"""
+    import sys as _sys
+    paths = []
+    bundle = getattr(_sys, "_MEIPASS", None)
+    if bundle:
+        paths.append(os.path.join(bundle, "tools", "ffmpeg.exe"))
+    tdir = tools_dir()
+    paths.append(os.path.join(tdir, "ffmpeg.exe"))
+    exe_dir = os.path.dirname(os.path.abspath(_sys.executable)) if getattr(_sys, "frozen", False) \
+        else os.path.dirname(tdir)
+    paths.append(os.path.join(exe_dir, "ffmpeg.exe"))
+    local = os.environ.get("LOCALAPPDATA", "")
+    if local:
+        paths.append(os.path.join(local, "WeChatEXP", "tools", "ffmpeg.exe"))
+    return paths
+
+
+def _find_ffmpeg() -> str:
+    """查找可用的 ffmpeg：PATH → 程序 tools 目录 → 程序根目录 → %LOCALAPPDATA%。
+
+    不缓存结果：用户把 ffmpeg.exe 放进 tools 后，下一张图片就会自动转换。
+    """
+    import shutil as _shutil
+    found = _shutil.which("ffmpeg")
+    if found:
+        return found
+    for c in _ffmpeg_search_paths():
+        if c and os.path.isfile(c):
+            return c
+    return None
+
+
+# ffmpeg 下载源（wxgf 图片解码用；国内可换镜像）
+FFMPEG_DOWNLOAD_URLS = [
+    ("gyan.dev（官方推荐）",
+     "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"),
+    ("BtbN GitHub（essentials 构建）",
+     "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"),
+]
+
+
+def install_ffmpeg_from_zip(zip_path: str, dest_dir: str = None):
+    """从 ffmpeg 压缩包里提取 bin/ffmpeg.exe 到本程序 tools 目录。
+
+    Returns: 安装后的 ffmpeg.exe 路径；找不到时报 ValueError。
+    """
+    import zipfile
+    if dest_dir is None:
+        dest_dir = tools_dir()
+    os.makedirs(dest_dir, exist_ok=True)
+    target = os.path.join(dest_dir, "ffmpeg.exe")
+    with zipfile.ZipFile(zip_path) as zf:
+        member = None
+        for name in zf.namelist():
+            low = name.lower().replace("\\", "/")
+            if low.endswith("/bin/ffmpeg.exe") or low == "ffmpeg.exe":
+                member = name
+                break
+        if not member:
+            raise ValueError("压缩包里没有找到 bin/ffmpeg.exe")
+        with zf.open(member) as src, open(target, "wb") as dst:
+            while True:
+                chunk = src.read(1 << 20)
+                if not chunk:
+                    break
+                dst.write(chunk)
+    if not os.path.isfile(target) or os.path.getsize(target) < 100000:
+        raise ValueError("解压出来的 ffmpeg.exe 不完整")
+    return target
+
+def wxgf_status() -> dict:
+    """wxgf(H.265) 图片解码能力状态（供界面提示用户安装 ffmpeg）。"""
+    ffmpeg = _find_ffmpeg()
+    dll = os.path.join(os.path.dirname(os.path.abspath(__file__)), "native", "VoipEngine.dll")
+    target = os.path.join(tools_dir(), "ffmpeg.exe")
+    return {
+        "supported": bool(ffmpeg) or os.path.isfile(dll),
+        "ffmpeg": ffmpeg or "",
+        "decoderDll": dll if os.path.isfile(dll) else "",
+        "toolsDir": tools_dir(),
+        "targetPath": target,
+        "installed": bool(ffmpeg),
+        "downloadUrls": [{"name": n, "url": u} for n, u in FFMPEG_DOWNLOAD_URLS],
+    }
+
+
+def wxgf_supported() -> bool:
+    """本机是否能解码微信 wxgf(H.265) 图片。"""
+    if os.name != "nt":
+        return bool(_find_ffmpeg())
+    return True if os.path.isfile(os.path.join(os.path.dirname(__file__), "native",
+                                            "VoipEngine.dll")) else bool(_find_ffmpeg())
+
+
+def _convert_wxgf_with_ffmpeg(data: bytes):
+    """用 ffmpeg 把 wxgf(H.265 裸流) 转成 JPEG；不可用时返回 None。"""
+    ffmpeg = _find_ffmpeg()
+    if not ffmpeg:
+        return None
+    import shutil as _shutil
+    import subprocess
+    import tempfile
+    tmpdir = tempfile.mkdtemp(prefix="wxgf_")
+    src = os.path.join(tmpdir, "in.wxgf")
+    dst = os.path.join(tmpdir, "out.jpg")
+    try:
+        with open(src, "wb") as f:
+            f.write(data)
+        proc = subprocess.run(
+            [ffmpeg, "-y", "-v", "error", "-f", "hevc", "-i", src,
+             "-frames:v", "1", "-q:v", "3", dst],
+            capture_output=True, timeout=90)
+        if proc.returncode == 0 and os.path.isfile(dst) and os.path.getsize(dst) > 100:
+            with open(dst, "rb") as f:
+                return f.read()
+        return None
+    except Exception:
+        return None
+    finally:
+        _shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def _find_sibling_thumbnail(resolved_path: str) -> str:
+    """原图是 wxgf 时，找同目录下 WeChat 生成的 _t/_h 缩略图（通常是 JPEG）。"""
+    if not resolved_path:
+        return None
+    base, ext = os.path.splitext(resolved_path)
+    if base.endswith("_t") or base.endswith("_h"):
+        return None
+    for suffix in ("_t", "_h"):
+        for cand in (base + suffix + ext, base + suffix + ".dat"):
+            if os.path.isfile(cand) and os.path.getsize(cand) > 0:
+                return cand
+    return None
+
 def _decrypt_dat_v2(file_path: str, aes_key: bytes, xor_key: int = None, output_dir: str = None) -> str:
     """Decrypt a V2 .dat file using AES-128-ECB key + XOR tail.
 
@@ -1056,9 +1222,14 @@ def _decrypt_dat_v2(file_path: str, aes_key: bytes, xor_key: int = None, output_
     dec_xor = bytes(b ^ xor_key for b in xor_data) if xor_data else b''
     result = dec_aes + raw_data + dec_xor
 
-    # Convert wxgf (WeChat proprietary) to standard image if needed
+    # Convert wxgf (WeChat proprietary H.265 container) to a normal JPEG.
+    # 优先用微信自带 DLL；没有时退回 ffmpeg（PATH 或 tools/ffmpeg.exe）。
+    # 都不可用时保留原始 wxgf 字节，由调用方改用 _t/_h 缩略图兜底，
+    # 绝不能把 wxgf 当成 image/jpeg 返回给浏览器（会显示成裂图）。
     if result[:4] == b'wxgf':
-        result = _convert_wxgf(result) or result
+        converted = _convert_wxgf(result) or _convert_wxgf_with_ffmpeg(result)
+        if converted:
+            result = converted
 
     import hashlib
     src_hash = hashlib.md5(file_path.encode()).hexdigest()[:12]
@@ -1213,6 +1384,11 @@ def serve_hardlink_media(decrypted_dir: str, media_info: dict, wxid: str = None)
     if not media_info:
         abort(404)
 
+    # 统一成绝对路径：否则 send_file 会把相对路径解析到 Flask 应用目录下
+    # （用 --decrypted-dir backup\2026-09-20 这类相对路径启动时会 500）
+    if decrypted_dir:
+        decrypted_dir = os.path.abspath(decrypted_dir)
+
     resolved = _resolve_hardlink_path(decrypted_dir, media_info, wxid)
     print(f"  [LIGHTBOX] md5={media_info.get('md5','')[:16]}... resolved={resolved}")
     if resolved is None or not os.path.isfile(resolved):
@@ -1233,16 +1409,43 @@ def serve_hardlink_media(decrypted_dir: str, media_info: dict, wxid: str = None)
         if version == 2:
             md5_val = media_info.get('md5', '')
 
-            def _try_v2_decrypt(key_bytes, xor_val):
+            # 记录解密原图时用上的密钥，供缩略图兜底复用
+            _found_key = {'aes': None, 'xor': None}
+
+            def _serve_decrypted(dec_path, source_tag=None):
+                """按文件头给出正确 MIME 后返回响应；不是图片则返回 None。"""
+                try:
+                    with open(dec_path, 'rb') as f:
+                        head = f.read(16)
+                except OSError:
+                    return None
+                mime = _sniff_image_mime(head)
+                if mime == 'application/octet-stream':
+                    return None
+                resp = send_file(os.path.abspath(dec_path), mimetype=mime, max_age=86400)
+                if source_tag:
+                    resp.headers['X-WeChat-Image-Source'] = source_tag
+                return resp
+
+            def _try_v2_decrypt(key_bytes, xor_val, src=None, source_tag=None):
                 """Try to decrypt and return a Flask response or None."""
                 if key_bytes is None:
                     return None
                 cache_dir = os.path.join(os.path.dirname(decrypted_dir), 'decrypted_media')
-                dec_path = _decrypt_dat_v2(resolved, key_bytes, xor_val, cache_dir)
-                if dec_path and os.path.isfile(dec_path):
-                    mime, _ = mimetypes.guess_type(dec_path)
-                    return send_file(dec_path, mimetype=mime or 'image/jpeg')
-                return None
+                dec_path = _decrypt_dat_v2(src or resolved, key_bytes, xor_val, cache_dir)
+                if not dec_path or not os.path.isfile(dec_path):
+                    return None
+                try:
+                    with open(dec_path, 'rb') as f:
+                        head = f.read(16)
+                except OSError:
+                    return None
+                if head[:4] == b'wxgf':
+                    # 解密成功但内容是微信私有 wxgf：记住密钥，稍后用小图兜底
+                    _found_key['aes'] = key_bytes
+                    _found_key['xor'] = xor_val
+                    return None
+                return _serve_decrypted(dec_path, source_tag)
 
             # Collect md5 variants to try (base + _h thumbnail)
             # NOTE: CDN md5 bridge and message-DB aeskey search are intentionally
@@ -1311,6 +1514,32 @@ def serve_hardlink_media(decrypted_dir: str, media_info: dict, wxid: str = None)
                             if rv:
                                 return rv
 
+            # 3b) wxgf 兜底：原图是微信私有 H.265 图片且本机无解码器时，
+            #     改用同目录 WeChat 生成的 _t/_h 缩略图（一般为 JPEG）
+            thumb_src = _find_sibling_thumbnail(resolved)
+            if thumb_src:
+                cache_dir = os.path.join(os.path.dirname(decrypted_dir), 'decrypted_media')
+                key_pairs = []
+                if _found_key['aes']:
+                    key_pairs.append((_found_key['aes'], _found_key['xor']))
+                for _m in _md5_variants:
+                    _e = key_map.get(_m) if key_map else None
+                    if _e:
+                        key_pairs.append((_e['aes'], _e.get('xor')))
+                if key_map:
+                    _fe = next(iter(key_map.values()))
+                    key_pairs.append((_fe['aes'], _fe.get('xor')))
+                for _aes, _xk in key_pairs:
+                    try:
+                        _dec = _decrypt_dat_v2(thumb_src, _aes, _xk, cache_dir)
+                    except Exception:
+                        _dec = None
+                    if _dec and os.path.isfile(_dec):
+                        _rv = _serve_decrypted(_dec, source_tag='thumbnail')
+                        if _rv:
+                            print(f"  [WXGF] 原图不可解码，已回退缩略图: {os.path.basename(thumb_src)}")
+                            return _rv
+
             # 4) Thumbnail cache fallback — WeChat stores decrypted thumbnails
             local_id = media_info.get('local_id', 0) if media_info else 0
             thumb = _find_cached_thumbnail(decrypted_dir, md5_val, local_id, wxid)
@@ -1341,6 +1570,10 @@ def serve_hardlink_media(decrypted_dir: str, media_info: dict, wxid: str = None)
 
             # Provide actionable error message
             from engine.services.v2_key_extract import is_wechat_running as _wx_running
+            if _found_key['aes'] and not wxgf_supported():
+                # 密钥没问题，只是本机缺少 wxgf(H.265) 解码器、且没有可用缩略图
+                abort(415, description='该图片是微信 wxgf(H.265) 格式：请把 ffmpeg.exe 放到程序目录的 '
+                                       'tools\\ 下（或在微信中打开该图片后再刷新），即可显示原图')
             if _wx_running():
                 abort(415, description='V2加密图片，请在微信中查看该图片后刷新重试')
             else:
@@ -1351,8 +1584,14 @@ def serve_hardlink_media(decrypted_dir: str, media_info: dict, wxid: str = None)
             cache_dir = os.path.join(os.path.dirname(decrypted_dir), 'decrypted_media')
             dec_path = _decrypt_dat_v1(resolved, cache_dir)
             if dec_path and os.path.isfile(dec_path):
-                mime, _ = mimetypes.guess_type(dec_path)
-                return send_file(dec_path, mimetype=mime or 'image/jpeg')
+                try:
+                    with open(dec_path, 'rb') as _f:
+                        _head = _f.read(16)
+                except OSError:
+                    _head = b''
+                _mime = _sniff_image_mime(_head)
+                if _mime != 'application/octet-stream':
+                    return send_file(dec_path, mimetype=_mime, max_age=86400)
 
         # V0: XOR encryption — try known keys
         xor_key, ext = _detect_dat_xor_key(resolved)
@@ -1360,10 +1599,27 @@ def serve_hardlink_media(decrypted_dir: str, media_info: dict, wxid: str = None)
             cache_dir = os.path.join(os.path.dirname(decrypted_dir), 'decrypted_media')
             dec_path = _decrypt_dat_file(resolved, xor_key, cache_dir)
             if dec_path and os.path.isfile(dec_path):
-                mime, _ = mimetypes.guess_type(f'file.{ext}')
-                return send_file(dec_path, mimetype=mime or 'application/octet-stream')
+                try:
+                    with open(dec_path, 'rb') as _f:
+                        _head = _f.read(16)
+                except OSError:
+                    _head = b''
+                _mime = _sniff_image_mime(_head)
+                if _mime != 'application/octet-stream':
+                    return send_file(dec_path, mimetype=_mime, max_age=86400)
 
-        # Serve raw (might be non-encrypted .dat)
+        # Serve raw (might be non-encrypted .dat) — 但绝不把 wxgf 当图片返回
+        try:
+            with open(resolved, 'rb') as _f:
+                _head = _f.read(16)
+        except OSError:
+            _head = b''
+        if _head[:4] == b'wxgf':
+            abort(415, description='该图片是微信 wxgf(H.265) 格式，当前环境无法解码：'
+                                   '请把 ffmpeg.exe 放到程序目录的 tools\\ 下后重试')
+        _mime = _sniff_image_mime(_head)
+        if _mime != 'application/octet-stream':
+            return send_file(resolved, mimetype=_mime, max_age=86400)
         mime, _ = mimetypes.guess_type(resolved)
         return send_file(resolved, mimetype=mime or 'application/octet-stream',
                          max_age=86400)

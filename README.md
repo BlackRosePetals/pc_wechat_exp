@@ -1,6 +1,6 @@
 # WeChat EXP 使用手册
 
-> 版本：2.5.20260920 | 更新日期：2026-09-20 | 适用 WeChat 4.x（已测试 4.1.9 / 4.1.10 / 4.1.12.55 / 4.1.15.11）| Windows 10/11
+> 版本：2.6.20260920 | 更新日期：2026-09-20 | 适用 WeChat 4.x（已测试 4.1.9 / 4.1.10 / 4.1.12.55 / 4.1.15.11）| Windows 10/11
 
 ---
 
@@ -645,6 +645,29 @@ WeChat EXP 是一款 Windows 平台下的微信聊天记录**备份、查看与�
 
 **不会。** 本程序完全在本地运行，不会将您的任何聊天数据、个人信息上传到互联网。所有数据保留在您的电脑上。
 
+### Q14：部分图片打不开 / 显示"该图片是微信 wxgf(H.265) 格式"
+
+**原因**：微信 4.x 有一部分图片（尤其原图）用微信私有的 **wxgf（H.265/HEVC）** 格式存放，
+浏览器不能直接显示，需要 **ffmpeg** 解码后才能转成 JPEG。
+
+**三种处理方式（任选其一）**：
+
+1. **一键安装（推荐）**：图片位置会显示提示，点「**⬇ 一键安装 ffmpeg**」自动下载并安装到程序目录的 `tools\` 下；
+   安装完成后页面会在 5 秒内**自动转换并显示原图**（无需重启程序）
+2. **手动放置**：自己下载 ffmpeg（[gyan.dev](https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip)），
+   把压缩包里 `bin\ffmpeg.exe` 放到以下任一位置即可，程序会自动检测：
+   - `<程序目录>\tools\ffmpeg.exe`（推荐，点提示里的「📂 打开 tools 目录」可直接打开）
+   - `<程序目录>\ffmpeg.exe`
+   - `%LOCALAPPDATA%\WeChatEXP\tools\ffmpeg.exe`
+   - 或加入系统 `PATH`
+3. **不安装也能看个大概**：没有 ffmpeg 时，程序会自动退回显示**图片自带的小缩略图**
+   （很小，但能看出内容），不会再显示裂图
+
+> 开发者注意：打包前把 `ffmpeg.exe` 放进项目 `tools\` 目录，`build_nopause.bat` 会**自动把它打进 exe**，
+> 这样用户开箱即用（代价：exe 体积增加约 100–190 MB）。
+
+---
+
 ---
 
 ## 7. 附录：命令行参考（高级用户）
@@ -865,11 +888,11 @@ wechat_exp.exe import-keys --key "message_0.db=<64位hex>" --force
 
 ## 下载地址
 
-- 最新版本：`wechat_exp_2.5.20260920.exe` → [点击下载](https://github.com/sunhanaix/pc_wechat_exp/releases/download/v2.5.20260920/wechat_exp_2.5.20260920.exe)
+- 最新版本：`wechat_exp_2.6.20260920.exe` → [点击下载](https://github.com/sunhanaix/pc_wechat_exp/releases/download/v2.6.20260920/wechat_exp_2.6.20260920.exe)
 
 **源码地址**：[https://github.com/sunhanaix/pc_wechat_exp](https://github.com/sunhanaix/pc_wechat_exp)
 
-> ⚠️ **发布提醒**：请先在 GitHub Releases 上传 `dist/wechat_exp_2.5.20260920.exe`（SHA-256：`30C74CD628B0545D7E1F882D07180499194DFE92CB0708311A89DBF150D608B2`）并打上 `v2.5.20260920` 标签，链接方可生效。
+> ⚠️ **发布提醒**：请先在 GitHub Releases 上传 `dist/wechat_exp_2.6.20260920.exe`（SHA-256：`BF0CEFA98F851EC82FD06F3644FB1DC83E7D091C0BF7540E5C157B25AD2B12B8`）并打上 `v2.6.20260920` 标签，链接方可生效。
 
 > 反馈问题时请提供：  
 > 1. 程序运行的完整截图或文字输出  

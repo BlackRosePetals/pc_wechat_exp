@@ -461,3 +461,94 @@ def address_book_export():
         mimetype='text/csv',
         headers={'Content-Disposition': 'attachment; filename=address_book.csv'}
     )
+
+@api_bp.route("/wxgf/status")
+def wxgf_status_api():
+    """GET /api/wxgf/status — wxgf(H.265) 图片解码能力（供界面引导安装 ffmpeg）。"""
+    from engine.services.media import wxgf_status
+    try:
+        return jsonify(wxgf_status())
+    except Exception as e:
+        return jsonify({"supported": False, "installed": False, "error": str(e)}), 500
+
+
+@api_bp.route("/wxgf/install-ffmpeg", methods=["POST"])
+def wxgf_install_ffmpeg():
+    """POST /api/wxgf/install-ffmpeg — 一键下载并安装 ffmpeg 到 tools 目录（SSE 进度）。
+
+    下载源可通过 body {"url": "..."} 覆盖（便于使用国内镜像）。
+    """
+    import threading
+    import time
+    from web.sse import create_sse_progress, sse_response
+    from engine.services.media import (FFMPEG_DOWNLOAD_URLS, install_ffmpeg_from_zip,
+                                       tools_dir, _find_ffmpeg)
+
+    data = request.get_json(silent=True) or {}
+    url = (data.get("url") or "").strip() or FFMPEG_DOWNLOAD_URLS[0][1]
+    push, gen = create_sse_progress()
+
+    def _run():
+        try:
+            import shutil
+            import tempfile
+            import urllib.request
+            dest = tools_dir()
+            push("download", "开始下载 ffmpeg: " + url, 0.02)
+            tmpdir = tempfile.mkdtemp(prefix="ffmpeg_dl_")
+            zip_path = os.path.join(tmpdir, "ffmpeg.zip")
+            state = {"last": 0.0, "shown": 0.0}
+
+            def _hook(blocks, block_size, total_size):
+                got = blocks * block_size
+                if total_size and total_size > 0:
+                    pct = min(got / float(total_size), 1.0)
+                    now = time.time()
+                    if now - state["last"] > 0.6:
+                        state["last"] = now
+                        push("download",
+                             "已下载 %.1f / %.1f MB" % (got / 1048576.0, total_size / 1048576.0),
+                             0.05 + pct * 0.8)
+
+            urllib.request.urlretrieve(url, zip_path, reporthook=_hook)
+            push("extract", "下载完成，正在解压 ffmpeg.exe ...", 0.88)
+            target = install_ffmpeg_from_zip(zip_path, dest)
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            found = _find_ffmpeg()
+            push("verify", "安装完成: " + str(found or target), 0.98)
+            push.done({"installed": True, "path": found or target, "toolsDir": dest})
+        except Exception as e:
+            push.error("安装失败: " + str(e) +
+                       "（也可以手动下载 ffmpeg 后把 ffmpeg.exe 放进 tools 目录）")
+
+    threading.Thread(target=_run, daemon=True).start()
+    return sse_response(gen)
+
+
+@api_bp.route("/wxgf/open-tools", methods=["POST"])
+def wxgf_open_tools():
+    """POST /api/wxgf/open-tools — 打开 tools 目录并写入放置说明。"""
+    from engine.services.media import tools_dir
+    d = tools_dir()
+    try:
+        os.makedirs(d, exist_ok=True)
+        hint = os.path.join(d, "把-ffmpeg.exe-放到这里.txt")
+        if not os.path.isfile(hint):
+            with open(hint, "w", encoding="utf-8") as f:
+                f.write(
+                    "微信 wxgf(H.265) 图片需要 ffmpeg 才能显示原图。\n\n"
+                    "使用方法：\n"
+                    "  1) 下载 Windows 版 ffmpeg（解压即用）：\n"
+                    "     https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip\n"
+                    "  2) 解压后把 bin\\ffmpeg.exe 复制到本目录\n"
+                    "  3) 回到聊天查看器点「重试」，图片会自动转换\n\n"
+                    "程序每次请求都会重新检测本目录，放入后无需重启。\n")
+        opened = False
+        try:
+            os.startfile(d)
+            opened = True
+        except Exception:
+            pass
+        return jsonify({"ok": True, "toolsDir": d, "opened": opened})
+    except Exception as e:
+        return jsonify({"error": "open_failed", "message": str(e), "toolsDir": d}), 500

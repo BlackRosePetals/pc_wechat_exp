@@ -72,7 +72,7 @@
 <div class="container">
 <h1 id="wechat-exp">WeChat EXP 使用手册</h1>
 <blockquote>
-<p>版本：2.5.20260920 | 更新日期：2026-09-20 | 适用 WeChat 4.x（已测试 4.1.9 / 4.1.10 / 4.1.12.55 / 4.1.15.11）| Windows 10/11</p>
+<p>版本：2.6.20260920 | 更新日期：2026-09-20 | 适用 WeChat 4.x（已测试 4.1.9 / 4.1.10 / 4.1.12.55 / 4.1.15.11）| Windows 10/11</p>
 </blockquote>
 <hr>
 <h2 id="_1">⚠️ 重要警告 — 请务必阅读</h2>
@@ -784,6 +784,27 @@
 <p>与微信数据目录的大小相近。通常首次备份需要 2-10 GB。后续增量备份（只备份新增数据）占用空间较小。</p>
 <h3 id="q13">Q13：程序会联网上传我的数据吗</h3>
 <p><strong>不会。</strong> 本程序完全在本地运行，不会将您的任何聊天数据、个人信息上传到互联网。所有数据保留在您的电脑上。</p>
+<h3 id="q14-wxgfh265">Q14：部分图片打不开 / 显示"该图片是微信 wxgf(H.265) 格式"</h3>
+<p><strong>原因</strong>：微信 4.x 有一部分图片（尤其原图）用微信私有的 <strong>wxgf（H.265/HEVC）</strong> 格式存放，<br>
+浏览器不能直接显示，需要 <strong>ffmpeg</strong> 解码后才能转成 JPEG。</p>
+<p><strong>三种处理方式（任选其一）</strong>：</p>
+<ol>
+<li><strong>一键安装（推荐）</strong>：图片位置会显示提示，点「<strong>⬇ 一键安装 ffmpeg</strong>」自动下载并安装到程序目录的 <code>tools\</code> 下；<br>
+   安装完成后页面会在 5 秒内<strong>自动转换并显示原图</strong>（无需重启程序）</li>
+<li><strong>手动放置</strong>：自己下载 ffmpeg（<a href="https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip">gyan.dev</a>），<br>
+   把压缩包里 <code>bin\ffmpeg.exe</code> 放到以下任一位置即可，程序会自动检测：</li>
+<li><code>&lt;程序目录&gt;\tools\ffmpeg.exe</code>（推荐，点提示里的「📂 打开 tools 目录」可直接打开）</li>
+<li><code>&lt;程序目录&gt;\ffmpeg.exe</code></li>
+<li><code>%LOCALAPPDATA%\WeChatEXP\tools\ffmpeg.exe</code></li>
+<li>或加入系统 <code>PATH</code></li>
+<li><strong>不安装也能看个大概</strong>：没有 ffmpeg 时，程序会自动退回显示<strong>图片自带的小缩略图</strong><br>
+   （很小，但能看出内容），不会再显示裂图</li>
+</ol>
+<blockquote>
+<p>开发者注意：打包前把 <code>ffmpeg.exe</code> 放进项目 <code>tools\</code> 目录，<code>build_nopause.bat</code> 会<strong>自动把它打进 exe</strong>，<br>
+这样用户开箱即用（代价：exe 体积增加约 100–190 MB）。</p>
+</blockquote>
+<hr>
 <hr>
 <h2 id="7">7. 附录：命令行参考（高级用户）</h2>
 <p>以下内容适用于熟悉命令行的<strong>高级用户</strong>。普通用户无需了解此部分，直接双击 exe 使用即可。</p>
@@ -1025,11 +1046,11 @@ wechat_exp.exe import-keys --key &quot;message_0.db=&lt;64位hex&gt;&quot; --for
 <hr>
 <h2 id="_3">下载地址</h2>
 <ul>
-<li>最新版本：<code>wechat_exp_2.5.20260920.exe</code> → <a href="https://github.com/sunhanaix/pc_wechat_exp/releases/download/v2.5.20260920/wechat_exp_2.5.20260920.exe">点击下载</a></li>
+<li>最新版本：<code>wechat_exp_2.6.20260920.exe</code> → <a href="https://github.com/sunhanaix/pc_wechat_exp/releases/download/v2.6.20260920/wechat_exp_2.6.20260920.exe">点击下载</a></li>
 </ul>
 <p><strong>源码地址</strong>：<a href="https://github.com/sunhanaix/pc_wechat_exp">https://github.com/sunhanaix/pc_wechat_exp</a></p>
 <blockquote>
-<p>⚠️ <strong>发布提醒</strong>：请先在 GitHub Releases 上传 <code>dist/wechat_exp_2.5.20260920.exe</code>（SHA-256：<code>30C74CD628B0545D7E1F882D07180499194DFE92CB0708311A89DBF150D608B2</code>）并打上 <code>v2.5.20260920</code> 标签，链接方可生效。</p>
+<p>⚠️ <strong>发布提醒</strong>：请先在 GitHub Releases 上传 <code>dist/wechat_exp_2.6.20260920.exe</code>（SHA-256：<code>BF0CEFA98F851EC82FD06F3644FB1DC83E7D091C0BF7540E5C157B25AD2B12B8</code>）并打上 <code>v2.6.20260920</code> 标签，链接方可生效。</p>
 <p>反馈问题时请提供：<br>
 1. 程序运行的完整截图或文字输出<br>
 2. 微信版本号（设置 → 关于微信）<br>

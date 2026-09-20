@@ -124,7 +124,7 @@ class MessageBubble extends Component {
       if (imgUrl) {
         const fallbackMsg = isWx4 ? 'V2加密图片无法解码 — 请在微信中查看该图片后刷新重试' : '图片已过期或不可访问';
         const imgId = `img-${m.id}`;
-        body = `<div style="text-align:center"><img id="${imgId}" class="bubble-image" src="${imgUrl}" alt="图片" onclick="event.stopPropagation();openLightbox('${lightboxUrl}')" onerror="console.error('IMG load failed:',this.src);this.style.display='none';this.nextElementSibling.style.display=''"><div style="color:#8b949e;padding:20px;display:none">${fallbackMsg}</div>${mi&&mi.file_name?`<div style="color:#8b949e;font-size:10px;margin-top:4px">${escapeHtml(mi.file_name)} ${mi.file_size?((mi.file_size/1024).toFixed(1)+' KB'):''}</div>`:''}</div>`;
+        body = `<div style="text-align:center"><img id="${imgId}" class="bubble-image" src="${imgUrl}" alt="图片" onclick="event.stopPropagation();openLightbox('${lightboxUrl}')" onerror="ImageFallback.handle(this)"><div class="img-fallback" style="color:#8b949e;padding:16px;display:none">${fallbackMsg}</div>${mi&&mi.file_name?`<div style="color:#8b949e;font-size:10px;margin-top:4px">${escapeHtml(mi.file_name)} ${mi.file_size?((mi.file_size/1024).toFixed(1)+' KB'):''}</div>`:''}</div>`;
       } else if (mi && mi.md5) {
         body = `<div class="nontext-placeholder image-plc"><span>🖼</span><span>图片</span><div style="color:#484f58;font-size:10px;margin-top:4px">MD5: ${escapeHtml(mi.md5.substring(0,16))}... 文件未找到</div></div>`;
       } else {
