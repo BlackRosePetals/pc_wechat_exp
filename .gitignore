@@ -33,3 +33,5 @@ tools/re/
 claude_kimi_ds.bat
 extract_keys.py
 gitignore_diff.txt
+
+tools/*.txt
