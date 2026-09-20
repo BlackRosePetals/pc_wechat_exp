@@ -571,9 +571,15 @@ def asr_commercial():
     for k in ("path", "chat"):
         if data.get(k):
             params[k] = data[k]
+    # body 里的 create_time / local_id 只有在有效值（非 0、非空）时才覆盖 URL 参数。
+    # 前端一度固定传 0，会把 voice_url 里的真实值覆盖成 0 → 最终被当成 None →
+    # 未播放过（还没生成缓存）的语音无法从 VoiceInfo 提取，只能报
+    # 「找不到这条语音的音频文件」；播放一次生成缓存后就又能转写了。
     for k in ("create_time", "local_id"):
-        if data.get(k) not in (None, ""):
-            params[k] = data[k]
+        v = data.get(k)
+        if v in (None, "", 0, "0"):
+            continue
+        params[k] = v
     try:
         create_time = int(params["create_time"]) if params.get("create_time") else None
         local_id = int(params["local_id"]) if params.get("local_id") else None

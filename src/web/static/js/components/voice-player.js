@@ -130,10 +130,20 @@ class VoicePlayerComponent {
       try { cfg = await transcriber.settings(); } catch (e) { cfg = null; }
       if (cfg && cfg.engine === 'baidu') {
         resultEl.textContent = '正在识别（百度语音识别）…';
+        // 把语音地址里的 path / chat / create_time / local_id 原样回传：这些参数是
+        // 后端定位并提取音频的唯一依据（尤其是尚未播放过、缓存还没生成的语音）。
+        // 以前固定传 create_time=0 / local_id=0，会覆盖掉真实值，导致「先点转文字
+        // 报音频文件不存在，先播放一次就正常」。
+        const q = new URLSearchParams((voiceUrl || '').split('?')[1] || '');
+        const payload = { voice_url: voiceUrl };
+        ['path', 'chat', 'create_time', 'local_id'].forEach(function (k) {
+          const v = q.get(k);
+          if (v) payload[k] = v;
+        });
         const resp = await fetch('/api/asr/commercial', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ voice_url: voiceUrl, create_time: 0, local_id: 0 }),
+          body: JSON.stringify(payload),
         });
         const d = await resp.json().catch(function () { return {}; });
         if (!resp.ok || d.error) {
