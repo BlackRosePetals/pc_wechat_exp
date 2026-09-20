@@ -1,6 +1,6 @@
 # WeChat EXP 使用手册
 
-> 版本：2.3.20260918 | 更新日期：2026-09-18 | 适用 WeChat 4.x（已测试 4.1.9 / 4.1.10 / 4.1.12.55）| Windows 10/11
+> 版本：2.3.20260920 | 更新日期：2026-09-20 | 适用 WeChat 4.x（已测试 4.1.9 / 4.1.10 / 4.1.12.55）| Windows 10/11
 
 ---
 
@@ -822,6 +822,8 @@ wechat_exp.exe import-keys --key "message_0.db=<64位hex>" --force
 ```
 
 > 密钥只写进本机的 `.wechat_exp_config.json`（已在 `.gitignore` 中），不会上传到任何地方；命令输出中的密钥一律打码显示。
+>
+> 📌 **配置文件位置**：源码运行时在项目根目录；使用打包好的 exe 时，配置文件在 **exe 所在目录**（即 `.wechat_exp_config.json` 与 exe 放在一起）。换目录/换电脑时把它一起复制过去，密钥就还在。
 
 ---
 
@@ -832,11 +834,11 @@ wechat_exp.exe import-keys --key "message_0.db=<64位hex>" --force
 
 ## 下载地址
 
-- 最新版本：`wechat_exp_2.3.20260918.exe` → [点击下载](https://github.com/sunhanaix/pc_wechat_exp/releases/download/v2.3.20260918/wechat_exp_2.3.20260918.exe)
+- 最新版本：`wechat_exp_2.3.20260920.exe` → [点击下载](https://github.com/sunhanaix/pc_wechat_exp/releases/download/v2.3.20260920/wechat_exp_2.3.20260920.exe)
 
 **源码地址**：[https://github.com/sunhanaix/pc_wechat_exp](https://github.com/sunhanaix/pc_wechat_exp)
 
-> ⚠️ **发布提醒**：请先在 GitHub Releases 上传 `dist/wechat_exp_2.3.20260918.exe`（SHA-256：`14C40C713ECFE9D31B47B6AE8156B8FBF1671977A2F93453340AD58FB7499A07`）并打上 `v2.3.20260918` 标签，链接方可生效。
+> ⚠️ **发布提醒**：请先在 GitHub Releases 上传 `dist/wechat_exp_2.3.20260920.exe`（SHA-256：`E9DBBB84AACB8A163CE6F073B4E228FF2CC945B15A7C02C6B630B9479C3F76D2`）并打上 `v2.3.20260920` 标签，链接方可生效。
 
 > 反馈问题时请提供：  
 > 1. 程序运行的完整截图或文字输出  
