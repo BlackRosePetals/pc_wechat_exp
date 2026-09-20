@@ -26,6 +26,8 @@ def create_app(decrypted_dir: str, wxid: str = None, db_dir: str = None) -> Flas
     app.config['DB_DIR'] = db_dir
     app.config['APP_VERSION'] = __version__
     app.json.ensure_ascii = False
+    # 模板改动即时生效（打包后模板在 _MEIPASS 里只读，无额外开销）
+    app.config['TEMPLATES_AUTO_RELOAD'] = True
 
     # Inject version into all template contexts
     @app.context_processor

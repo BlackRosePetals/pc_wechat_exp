@@ -13,11 +13,23 @@
 <script type="module">
 import { pipeline, env } from '@xenova/transformers';
 
-// Load model from local Flask static files (bundled in exe)
-// Falls back to Hugging Face CDN if local model not found
+// 模型文件由本地 Flask 路由提供：/api/asr/model/<model>/<file>
+// （用户目录 %LOCALAPPDATA%\WeChatEXP\models 优先，其次程序内置的 static/models）
 env.remoteHost = window.location.origin;
-env.remotePathTemplate = '/static/models/{model}';
+env.remotePathTemplate = '/api/asr/model/{model}';
 
+// 模型可选（localStorage 记忆）；默认 base，中文识别明显好于 tiny
+const ASR_MODEL_KEY = 'wechat_exp_asr_model';
+const ASR_DEFAULT_MODEL = 'Xenova/whisper-base';
+function _getModel() {
+  try { return localStorage.getItem(ASR_MODEL_KEY) || ASR_DEFAULT_MODEL; } catch (e) { return ASR_DEFAULT_MODEL; }
+}
+function _setModel(m) {
+  try { localStorage.setItem(ASR_MODEL_KEY, m); } catch (e) { /* ignore */ }
+  _transcriber = null;
+  _loading = false;
+  _loadResolvers = [];
+}
 let _transcriber = null;
 let _loading = false;
 let _loadResolvers = [];
@@ -30,7 +42,7 @@ async function _getTranscriber(onProgress) {
   _loading = true;
   try {
     onProgress && onProgress('正在加载语音识别模型...');
-    _transcriber = await pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny', {
+    _transcriber = await pipeline('automatic-speech-recognition', _getModel(), {
       quantized: true,
       progress_callback: (p) => {
         if (p.status === 'progress' && p.file) {
@@ -50,13 +62,75 @@ async function _getTranscriber(onProgress) {
   }
 }
 
+async function _modelStatus() {
+  try {
+    const r = await fetch('/api/asr/status?model=' + encodeURIComponent(_getModel()));
+    return await r.json();
+  } catch (e) {
+    return null;
+  }
+}
+
+function _installModel(onProgress) {
+  return new Promise((resolve, reject) => {
+    fetch('/api/asr/install', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: _getModel() }),
+    }).then((resp) => {
+      if (!resp.body) { reject(new Error('浏览器不支持流式进度')); return; }
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buf = '';
+      function pump() {
+        return reader.read().then((res) => {
+          if (res.done) return;
+          buf += decoder.decode(res.value, { stream: true });
+          const parts = buf.split('\n\n');
+          buf = parts.pop();
+          parts.forEach((block) => {
+            let ev = 'message'; let data = '';
+            block.split('\n').forEach((line) => {
+              if (line.indexOf('event: ') === 0) ev = line.slice(7).trim();
+              else if (line.indexOf('data: ') === 0) data += line.slice(6);
+            });
+            if (!data) return;
+            let obj = null;
+            try { obj = JSON.parse(data); } catch (e) { return; }
+            if (ev === 'progress') { onProgress && onProgress(obj.detail || '', obj.progress || 0); }
+            else if (ev === 'done') { _transcriber = null; _loading = false; resolve(obj.result || {}); }
+            else if (ev === 'error') { reject(new Error(obj.message || '下载失败')); }
+          });
+          return pump();
+        });
+      }
+      return pump();
+    }).catch(reject);
+  });
+}
+
 window.WhisperTranscriber = {
+  get modelId() { return _getModel(); },
+  setModel: _setModel,
+  defaultModel: ASR_DEFAULT_MODEL,
   get loaded() { return !!_transcriber; },
-  async transcribe(audioUrl, onProgress) {
+  status: _modelStatus,
+  install: _installModel,
+  reset() { _transcriber = null; _loading = false; _loadResolvers = []; },
+  async transcribe(audioUrl, onProgress, options) {
     const t = await _getTranscriber(onProgress);
     if (!t) throw new Error('模型加载失败');
-    const result = await t(audioUrl);
-    return result.text || '';
+    // 默认参数针对短语音做了防"复读机"处理：不加这些参数时 whisper-tiny
+    // 容易把一句短语音重复输出几十遍
+    const opts = Object.assign({
+      chunk_length_s: 30,
+      stride_length_s: 5,
+      no_repeat_ngram_size: 3,
+      repetition_penalty: 1.15,
+      max_new_tokens: 256,
+    }, options || {});
+    const result = await t(audioUrl, opts);
+    return (result.text || '').trim();
   }
 };
 </script>

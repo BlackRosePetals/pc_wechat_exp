@@ -72,7 +72,7 @@
 <div class="container">
 <h1 id="wechat-exp">WeChat EXP 使用手册</h1>
 <blockquote>
-<p>版本：2.6.20260920 | 更新日期：2026-09-20 | 适用 WeChat 4.x（已测试 4.1.9 / 4.1.10 / 4.1.12.55 / 4.1.15.11）| Windows 10/11</p>
+<p>版本：2.7.20260920 | 更新日期：2026-09-20 | 适用 WeChat 4.x（已测试 4.1.9 / 4.1.10 / 4.1.12.55 / 4.1.15.11）| Windows 10/11</p>
 </blockquote>
 <hr>
 <h2 id="_1">⚠️ 重要警告 — 请务必阅读</h2>
@@ -806,6 +806,23 @@
 </blockquote>
 <hr>
 <hr>
+<h3 id="q15-unsupported-model-type-whisper">Q15：点「转文字」提示"识别失败: Unsupported model type: whisper"</h3>
+<p><strong>原因</strong>：语音转文字是在浏览器里用 <strong>Whisper</strong> 模型识别的，模型文件（ONNX 权重）默认<strong>不随程序分发</strong>，<br>
+需要首次使用时下载。文件缺失时 transformers.js 会抛出这句难懂的错。</p>
+<p><strong>现在的流程（v2.7 起，全自动引导）</strong>：</p>
+<ol>
+<li>点语音气泡上的「T（转文字）」→ 若本机还没有模型，气泡下方会出现引导面板：<br>
+   可选择模型 —— <strong>Whisper Base（76MB，默认推荐）</strong> / Whisper Tiny（42MB，最快） / Whisper Small（240MB，最准）</li>
+<li>点「<strong>⬇ 下载并使用</strong>」→ 面板内显示<strong>下载进度条</strong>（按文件推进：config → tokenizer → 编码器 → 解码器），<br>
+   模型保存到 <code>%LOCALAPPDATA%\WeChatEXP\models</code></li>
+<li>下载完成后<strong>自动继续识别</strong>并显示文字 —— 无需刷新页面、无需重启程序</li>
+</ol>
+<p><strong>说明</strong>：<br>
+- 模型只下载一次，之后<strong>完全离线可用</strong>；中途失败/关闭页面后再点一次会<strong>断点续传</strong>（已下好的文件会跳过）<br>
+- 默认下载源是 <code>hf-mirror.com</code>（国内镜像，实测 76MB 约 1 分钟）；失败时提示重试<br>
+- 也可以手动下载（HuggingFace <code>Xenova/whisper-base</code>）后把文件放进 <code>%LOCALAPPDATA%\WeChatEXP\models\Xenova\whisper-base\</code>（保留 <code>onnx\</code> 子目录结构）<br>
+- 识别质量与速度：Tiny 最快但较粗 → <strong>Base 均衡（默认）</strong> → Small 更准但更慢、下载更大</p>
+<hr>
 <h2 id="7">7. 附录：命令行参考（高级用户）</h2>
 <p>以下内容适用于熟悉命令行的<strong>高级用户</strong>。普通用户无需了解此部分，直接双击 exe 使用即可。</p>
 <h3 id="71">7.1 全局选项</h3>
@@ -1046,11 +1063,11 @@ wechat_exp.exe import-keys --key &quot;message_0.db=&lt;64位hex&gt;&quot; --for
 <hr>
 <h2 id="_3">下载地址</h2>
 <ul>
-<li>最新版本：<code>wechat_exp_2.6.20260920.exe</code> → <a href="https://github.com/sunhanaix/pc_wechat_exp/releases/download/v2.6.20260920/wechat_exp_2.6.20260920.exe">点击下载</a></li>
+<li>最新版本：<code>wechat_exp_2.7.20260920.exe</code> → <a href="https://github.com/sunhanaix/pc_wechat_exp/releases/download/v2.7.20260920/wechat_exp_2.7.20260920.exe">点击下载</a></li>
 </ul>
 <p><strong>源码地址</strong>：<a href="https://github.com/sunhanaix/pc_wechat_exp">https://github.com/sunhanaix/pc_wechat_exp</a></p>
 <blockquote>
-<p>⚠️ <strong>发布提醒</strong>：请先在 GitHub Releases 上传 <code>dist/wechat_exp_2.6.20260920.exe</code>（SHA-256：<code>BF0CEFA98F851EC82FD06F3644FB1DC83E7D091C0BF7540E5C157B25AD2B12B8</code>）并打上 <code>v2.6.20260920</code> 标签，链接方可生效。</p>
+<p>⚠️ <strong>发布提醒</strong>：请先在 GitHub Releases 上传 <code>dist/wechat_exp_2.7.20260920.exe</code>（SHA-256：<code>D24190974B63E69C51515797DAAC0463FBDE3461814CF8C9B4C57C7E35906490</code>）并打上 <code>v2.7.20260920</code> 标签，链接方可生效。</p>
 <p>反馈问题时请提供：<br>
 1. 程序运行的完整截图或文字输出<br>
 2. 微信版本号（设置 → 关于微信）<br>

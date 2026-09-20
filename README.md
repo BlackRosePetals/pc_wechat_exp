@@ -1,6 +1,6 @@
 # WeChat EXP 使用手册
 
-> 版本：2.6.20260920 | 更新日期：2026-09-20 | 适用 WeChat 4.x（已测试 4.1.9 / 4.1.10 / 4.1.12.55 / 4.1.15.11）| Windows 10/11
+> 版本：2.7.20260920 | 更新日期：2026-09-20 | 适用 WeChat 4.x（已测试 4.1.9 / 4.1.10 / 4.1.12.55 / 4.1.15.11）| Windows 10/11
 
 ---
 
@@ -670,6 +670,26 @@ WeChat EXP 是一款 Windows 平台下的微信聊天记录**备份、查看与�
 
 ---
 
+### Q15：点「转文字」提示"识别失败: Unsupported model type: whisper"
+
+**原因**：语音转文字是在浏览器里用 **Whisper** 模型识别的，模型文件（ONNX 权重）默认**不随程序分发**，
+需要首次使用时下载。文件缺失时 transformers.js 会抛出这句难懂的错。
+
+**现在的流程（v2.7 起，全自动引导）**：
+
+1. 点语音气泡上的「T（转文字）」→ 若本机还没有模型，气泡下方会出现引导面板：
+   可选择模型 —— **Whisper Base（76MB，默认推荐）** / Whisper Tiny（42MB，最快） / Whisper Small（240MB，最准）
+2. 点「**⬇ 下载并使用**」→ 面板内显示**下载进度条**（按文件推进：config → tokenizer → 编码器 → 解码器），
+   模型保存到 `%LOCALAPPDATA%\WeChatEXP\models`
+3. 下载完成后**自动继续识别**并显示文字 —— 无需刷新页面、无需重启程序
+
+**说明**：
+- 模型只下载一次，之后**完全离线可用**；中途失败/关闭页面后再点一次会**断点续传**（已下好的文件会跳过）
+- 默认下载源是 `hf-mirror.com`（国内镜像，实测 76MB 约 1 分钟）；失败时提示重试
+- 也可以手动下载（HuggingFace `Xenova/whisper-base`）后把文件放进 `%LOCALAPPDATA%\WeChatEXP\models\Xenova\whisper-base\`（保留 `onnx\` 子目录结构）
+- 识别质量与速度：Tiny 最快但较粗 → **Base 均衡（默认）** → Small 更准但更慢、下载更大
+
+---
 ## 7. 附录：命令行参考（高级用户）
 
 以下内容适用于熟悉命令行的**高级用户**。普通用户无需了解此部分，直接双击 exe 使用即可。
@@ -888,11 +908,11 @@ wechat_exp.exe import-keys --key "message_0.db=<64位hex>" --force
 
 ## 下载地址
 
-- 最新版本：`wechat_exp_2.6.20260920.exe` → [点击下载](https://github.com/sunhanaix/pc_wechat_exp/releases/download/v2.6.20260920/wechat_exp_2.6.20260920.exe)
+- 最新版本：`wechat_exp_2.7.20260920.exe` → [点击下载](https://github.com/sunhanaix/pc_wechat_exp/releases/download/v2.7.20260920/wechat_exp_2.7.20260920.exe)
 
 **源码地址**：[https://github.com/sunhanaix/pc_wechat_exp](https://github.com/sunhanaix/pc_wechat_exp)
 
-> ⚠️ **发布提醒**：请先在 GitHub Releases 上传 `dist/wechat_exp_2.6.20260920.exe`（SHA-256：`BF0CEFA98F851EC82FD06F3644FB1DC83E7D091C0BF7540E5C157B25AD2B12B8`）并打上 `v2.6.20260920` 标签，链接方可生效。
+> ⚠️ **发布提醒**：请先在 GitHub Releases 上传 `dist/wechat_exp_2.7.20260920.exe`（SHA-256：`D24190974B63E69C51515797DAAC0463FBDE3461814CF8C9B4C57C7E35906490`）并打上 `v2.7.20260920` 标签，链接方可生效。
 
 > 反馈问题时请提供：  
 > 1. 程序运行的完整截图或文字输出  

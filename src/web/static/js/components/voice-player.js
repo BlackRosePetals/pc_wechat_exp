@@ -125,6 +125,14 @@ class VoicePlayerComponent {
       if (!transcriber) {
         throw new Error('Whisper 模块未加载，请刷新页面后重试');
       }
+      // 模型没下载全时不要硬加载（transformers.js 会抛出难懂的错），直接引导下载
+      if (!transcriber.loaded) {
+        const st = await transcriber.status();
+        if (st && st.complete === false) {
+          this.showModelPrompt(msgId, voiceUrl, st);
+          return;
+        }
+      }
       const text = await transcriber.transcribe(voiceUrl, function(progress) {
         resultEl.textContent = progress;
       });
@@ -136,20 +144,116 @@ class VoicePlayerComponent {
         resultEl.className = 'vp-trans-result empty';
       }
     } catch (e) {
-      const msg = e.message || String(e);
-      if (msg.includes('Failed to fetch') || msg.includes('NetworkError')) {
-        resultEl.textContent = '识别失败: 网络连接失败，请检查网络后重试';
+      const msg = (e && e.message) || String(e);
+      if (/Unsupported model type|model_file_not_found|404|Failed to fetch|NetworkError/i.test(msg)) {
+        let st = null;
+        try {
+          st = window.WhisperTranscriber && window.WhisperTranscriber.status
+             ? await window.WhisperTranscriber.status() : null;
+        } catch (err) { st = null; }
+        this.showModelPrompt(msgId, voiceUrl, st || {});
       } else {
         resultEl.textContent = '识别失败: ' + msg;
+        resultEl.className = 'vp-trans-result error';
       }
-      resultEl.className = 'vp-trans-result error';
     } finally {
       btn.disabled = false;
       btn.textContent = 'T';
     }
+  }
+
+  // 语音识别模型缺失时的引导（首次使用需下载约 42MB，之后完全离线可用）
+  showModelPrompt(msgId, voiceUrl, st) {
+    const resultEl = document.getElementById('vp-result-' + msgId);
+    if (!resultEl) return;
+    const size = (st && st.sizeMb) || 76;
+    const current = (window.WhisperTranscriber && window.WhisperTranscriber.modelId) || '';
+    const list = (st && st.available) || [];
+    let sel = '<select id="asr-model-sel-' + msgId + '" style="font-size:11px;padding:2px 6px;' +
+              'background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;margin-left:4px">';
+    if (!list.length) {
+      sel += '<option value="' + current + '">' + current + '</option>';
+    } else {
+      list.forEach(function(m) {
+        const chosen = (m.model === current) ? ' selected' : '';
+        const rec = m.recommended ? '（推荐）' : '';
+        sel += '<option value="' + m.model + '"' + chosen + '>' + m.label + rec +
+               ' · ' + m.sizeMb + 'MB</option>';
+      });
+    }
+    sel += '</select>';
+    resultEl.className = 'vp-trans-result error';
+    resultEl.style.display = '';
+    resultEl.innerHTML =
+      '<div style="margin-bottom:4px">🧠 语音识别模型未就绪（首次需下载，之后可离线使用）</div>' +
+      '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' + sel +
+      '<button class="btn" style="padding:2px 10px;font-size:11px" onclick="VoicePlayer.installModel(' +
+      msgId + ', \'' + voiceUrl + '\')">⬇ 下载并使用</button></div>' +
+      '<div class="asr-progress" style="display:none;margin-top:6px">' +
+      '  <div style="height:6px;background:#21262d;border-radius:3px;overflow:hidden">' +
+      '    <div class="asr-bar" style="height:100%;width:0%;background:#1f6feb;transition:width .2s"></div></div>' +
+      '  <div class="asr-text" style="font-size:11px;color:#8b949e;margin-top:4px"></div></div>';
+  }
+
+  _asrProgress(msgId, pct, text) {
+    const box = document.querySelector('#vp-result-' + msgId + ' .asr-progress');
+    if (!box) return;
+    box.style.display = 'block';
+    const bar = box.querySelector('.asr-bar');
+    if (bar && typeof pct === 'number') bar.style.width = Math.max(2, Math.min(100, Math.round(pct * 100))) + '%';
+    const txt = box.querySelector('.asr-text');
+    if (txt && text) txt.textContent = text;
+  }
+
+  async installModel(msgId, voiceUrl) {
+    const resultEl = document.getElementById('vp-result-' + msgId);
+    const t = window.WhisperTranscriber;
+    if (!t) return;
+    // 用户在弹窗里选了哪个模型就用哪个
+    const sel = document.getElementById('asr-model-sel-' + msgId);
+    const model = (sel && sel.value) ? sel.value : t.modelId;
+    if (t.setModel) t.setModel(model);
+    const label = sel && sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text : model;
+    this._asrProgress(msgId, 0, '准备下载 ' + label + ' …');
+    try {
+      await t.install(function(msg, pct) { VoicePlayer._asrProgress(msgId, pct, msg); });
+      this._asrProgress(msgId, 1, '✅ 模型已就绪，正在识别语音…');
+      // 模型文件已在服务端就绪：清掉内存里失败的 pipeline，直接继续识别（无需刷新页面）
+      if (t.reset) t.reset();
+      setTimeout(function() { VoicePlayer.transcribeVoice(msgId, voiceUrl); }, 300);
+    } catch (e) {
+      const emsg = (e && e.message) || e;
+      this._asrProgress(msgId, 0, '❌ 下载失败: ' + emsg);
+      try {
+        sessionStorage.setItem('asr_pending', JSON.stringify({ msgId: msgId, url: voiceUrl }));
+      } catch (err) { /* ignore */ }
+    }
+  }
+
+  // 下载完模型刷新页面后，自动重试之前那次转写
+  tryAutoRetry() {
+    let raw = null;
+    try { raw = sessionStorage.getItem('asr_pending'); } catch (e) { return; }
+    if (!raw) return;
+    try { sessionStorage.removeItem('asr_pending'); } catch (e) { /* ignore */ }
+    let info = null;
+    try { info = JSON.parse(raw); } catch (e) { return; }
+    if (!info || !info.msgId) return;
+    setTimeout(function() {
+      if (document.getElementById('vp-trans-btn-' + info.msgId)) {
+        VoicePlayer.transcribeVoice(info.msgId, info.url);
+      }
+    }, 2500);
   }
 }
 
 // Singleton instance for inline onclick handlers in message-bubble templates
 const VoicePlayer = new VoicePlayerComponent();
 const transcribeVoice = (msgId, voicePath) => VoicePlayer.transcribeVoice(msgId, voicePath);
+
+// 模型下载完成刷新页面后，自动重试之前被中断的转写
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => VoicePlayer.tryAutoRetry());
+} else {
+  setTimeout(() => VoicePlayer.tryAutoRetry(), 1500);
+}

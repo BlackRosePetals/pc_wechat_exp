@@ -462,6 +462,67 @@ def address_book_export():
         headers={'Content-Disposition': 'attachment; filename=address_book.csv'}
     )
 
+@api_bp.route("/asr/model/<path:relpath>")
+def asr_model_file(relpath):
+    """GET /api/asr/model/<model>/<file> — 提供 ASR 模型文件（用户目录优先，其次内置）。"""
+    from flask import send_file
+    from engine.services.asr_model import model_roots
+    rel = relpath.replace("/", os.sep)
+    for root in model_roots():
+        p = os.path.join(root, rel)
+        if os.path.isfile(p):
+            if p.lower().endswith(".onnx"):
+                mime = "application/octet-stream"
+            elif p.lower().endswith(".json"):
+                mime = "application/json"
+            else:
+                import mimetypes as _mt
+                mime = _mt.guess_type(p)[0] or "application/octet-stream"
+            return send_file(os.path.abspath(p), mimetype=mime, max_age=3600)
+    return jsonify({"error": "model_file_not_found", "path": relpath}), 404
+
+
+@api_bp.route("/asr/status")
+def asr_status():
+    """GET /api/asr/status?model=... — 语音识别模型是否就绪。"""
+    from engine.services.asr_model import DEFAULT_MODEL, model_status
+    model = request.args.get("model") or DEFAULT_MODEL
+    return jsonify(model_status(model))
+
+
+@api_bp.route("/asr/install", methods=["POST"])
+def asr_install():
+    """POST /api/asr/install — 下载语音识别模型（SSE 进度）。
+
+    body: {"model": "...", "mirror": "https://hf-mirror.com"}
+    """
+    import threading
+    from web.sse import create_sse_progress, sse_response
+    from engine.services.asr_model import DEFAULT_MODEL, download_model
+
+    data = request.get_json(silent=True) or {}
+    model = data.get("model") or DEFAULT_MODEL
+    mirror = (data.get("mirror") or "").strip() or None
+    push, gen = create_sse_progress()
+
+    def _run():
+        try:
+            def _progress(msg, pct=0.0):
+                push("download", msg, min(max(pct, 0.0), 0.99))
+            out = download_model(model, base_url=mirror, progress_fn=_progress)
+            if out["bytes"]:
+                msg = "模型下载完成（%.1f MB）" % (out["bytes"] / 1048576.0)
+            else:
+                msg = "模型文件已存在，无需下载"
+            push.done({"model": model, "downloaded": out["downloaded"],
+                       "skipped": out["skipped"], "dir": out["dir"], "message": msg})
+        except Exception as e:
+            push.error("下载失败: " + str(e))
+
+    threading.Thread(target=_run, daemon=True).start()
+    return sse_response(gen)
+
+
 @api_bp.route("/wxgf/status")
 def wxgf_status_api():
     """GET /api/wxgf/status — wxgf(H.265) 图片解码能力（供界面引导安装 ffmpeg）。"""
