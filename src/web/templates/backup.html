@@ -36,7 +36,16 @@
   </div>
   <div style="margin-top:8px">
     <button id="btn-detect" class="btn btn-secondary" style="font-size:11px">自动检测微信目录</button>
+    <button id="btn-deep" class="btn btn-secondary" style="font-size:11px">🔍 深度搜索</button>
+    <button id="btn-use-dir" class="btn btn-secondary" style="font-size:11px">使用该目录</button>
   </div>
+  <div class="form-row" style="margin-top:8px">
+    <div style="flex:4"><label>检测到的数据目录（选择即填入上面的输入框）</label>
+      <select id="cfg-db-dir-list" style="width:100%;padding:8px 10px;border:1px solid #30363d;border-radius:6px;background:#0d1117;color:#c9d1d9;font-size:13px"></select></div>
+  </div>
+  <div id="dir-hint" style="color:#8b949e;font-size:12px;margin-top:8px;line-height:1.8">
+    💡 找不到数据目录时点「🔍 深度搜索」（最长 45 秒）；也可以在微信「设置 → 文件管理 → 打开文件夹」里查看，
+    把 <code>xwechat_files\&lt;账号&gt;\db_storage</code> 粘贴到输入框后点「使用该目录」。</div>
 </div>
 
 <div id="progress-container" class="progress-panel" style="display:none">
@@ -53,6 +62,7 @@
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/sse_progress.js') }}"></script>
 <script src="{{ url_for('static', filename='js/wizard.js') }}"></script>
+<script src="{{ url_for('static', filename='js/dbdir.js') }}"></script>
 <script>
 const page = new WizardPage({
   formId: 'wizard-form',
@@ -159,6 +169,9 @@ page.showSelectDialog = function(accounts) {
     });
   }
 };
+
+// 数据目录选择器：自动检测 / 深度搜索 / 使用该目录（记住到配置）
+const dirPicker = new DbDirPicker({ inputId: 'cfg-db-dir' });
 
 // Auto-detect button — show selection dialog when multiple accounts found
 document.getElementById('btn-detect').addEventListener('click', () => {
