@@ -22,6 +22,15 @@ _stdout_lock = threading.Lock()
 
 
 
+def _dir_hint():
+    """找不到微信数据目录时给用户的排查步骤。"""
+    try:
+        from engine.utils import data_dir_hint
+        return data_dir_hint(short=True)
+    except Exception:
+        return ("未找到微信数据目录。请在微信「设置 → 文件管理」中查看数据目录，"
+                "或在页面点「深度搜索」/ 手动填写目录。")
+
 def _safe_path(user_input: str) -> str:
     """Normalize a user-supplied path to resolve .. traversal."""
     return os.path.realpath(os.path.abspath(user_input))
@@ -71,7 +80,7 @@ def backup_run():
             pass
     if not db_dir or not os.path.isdir(db_dir):
         push, gen = create_sse_progress()
-        push.error("未找到微信数据目录 — 请确认微信已安装并至少登录过一次，或手动填写 db_storage 路径")
+        push.error(_dir_hint())
         return sse_response(gen)
 
     push, gen = create_sse_progress()
@@ -151,7 +160,7 @@ def backup_keyscan():
             pass
     if not db_dir:
         push, gen = create_sse_progress()
-        push.error("未找到微信数据目录 — 请指定 --db-dir 启动服务")
+        push.error(_dir_hint())
         return sse_response(gen)
 
     if not os.path.isdir(db_dir):
@@ -245,7 +254,7 @@ def backup_decrypt():
             pass
     if not db_dir:
         push, gen = create_sse_progress()
-        push.error("未找到微信数据目录 — 请指定 --db-dir 启动服务")
+        push.error(_dir_hint())
         return sse_response(gen)
 
     if not os.path.isdir(db_dir):
@@ -305,7 +314,7 @@ def backup_hook_keyscan():
             pass
     if not db_dir or not os.path.isdir(db_dir):
         push, gen = create_sse_progress()
-        push.error("未找到微信数据目录")
+        push.error(_dir_hint())
         return sse_response(gen)
 
     push, gen = create_sse_progress()

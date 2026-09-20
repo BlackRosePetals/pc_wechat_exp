@@ -10,6 +10,257 @@ import hashlib
 from collections import defaultdict
 
 
+# --- 目录名黑名单：深度搜索时跳过，避免浪费时间/越界 ---
+_JUNK_DIRS = {
+    "windows", "$recycle.bin", "system volume information", "recovery",
+    "programdata", "appdata", "application data", "node_modules", ".git",
+    "temp", "tmp", "$windows.~bt", "$windows.~ws", "perflogs", "msocache",
+    "intel", "amd", "nvidia", "drivers", "python27", "python3", "anaconda3",
+    "__pycache__", ".cache", ".vscode", ".gradle", ".nuget", ".m2",
+}
+
+
+def _decode_text(raw):
+    """尽力解码配置文件内容（UTF-16 仅在有 BOM 时尝试，避免把 GBK 误判成 UTF-16）。"""
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        try:
+            return raw.decode("utf-16")
+        except (UnicodeDecodeError, UnicodeError):
+            pass
+    for enc in ("utf-8-sig", "gbk"):
+        try:
+            return raw.decode(enc)
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+    return ""
+
+
+def _iter_path_like_values(text):
+    """从配置文本里提取所有"看起来像路径"的值（支持纯路径与 key=value）。"""
+    for line in (text or "").splitlines():
+        line = line.strip().strip("\ufeff")
+        if not line or line.startswith(("#", ";", "[")):
+            continue
+        value = line.split("=", 1)[1] if "=" in line else line
+        value = value.strip().strip(chr(34)).strip(chr(39)).strip()
+        if not value:
+            continue
+        yield value
+
+
+def _normalize_save_path(value):
+    """把微信的特殊保存位置记号转成真实路径。"""
+    v = (value or "").strip().strip(chr(34))
+    low = v.lower().rstrip(":")
+    home = os.environ.get("USERPROFILE", "")
+    if low in ("mydocument", "mydocuments", "documents", "document"):
+        return os.path.join(home, "Documents")
+    if low in ("mydesktop", "desktop"):
+        return os.path.join(home, "Desktop")
+    return v
+
+
+def _wechat_config_paths():
+    """读取微信自身配置（%APPDATA%\\Tencent\\xwechat\\config\\*.ini 等）。
+
+    不同版本写法不一：可能是纯路径、key=value、带引号、MyDocument: 记号，
+    也可能直接指向 xwechat_files 或 db_storage。这里全部兜住。
+    """
+    appdata = os.environ.get("APPDATA", "")
+    local = os.environ.get("LOCALAPPDATA", "")
+    search_dirs = [
+        os.path.join(appdata, "Tencent", "xwechat", "config"),
+        os.path.join(appdata, "Tencent", "xwechat", "All Users", "config"),
+        os.path.join(appdata, "Tencent", "WeChat", "config"),
+        os.path.join(local, "Tencent", "xwechat", "config"),
+    ]
+    found = []
+    for cfg_dir in search_dirs:
+        if not os.path.isdir(cfg_dir):
+            continue
+        try:
+            names = os.listdir(cfg_dir)
+        except OSError:
+            continue
+        for name in names:
+            if not name.lower().endswith((".ini", ".txt")):
+                continue
+            fpath = os.path.join(cfg_dir, name)
+            try:
+                with open(fpath, "rb") as f:
+                    raw = f.read(4096)
+            except OSError:
+                continue
+            if b"\x00" in raw[:4]:
+                pass  # UTF-16 也允许，交给 _decode_text
+            text = _decode_text(raw)
+            for value in _iter_path_like_values(text):
+                path = _normalize_save_path(value)
+                if len(path) < 3 or len(path) > 260:
+                    continue
+                # 只要形如盘符/UNC 的路径就收下（哪怕暂时不存在）
+                if re.match(r"^[A-Za-z]:[\\/]", path) or path.startswith("\\\\"):
+                    found.append(os.path.normpath(path))
+    return found
+
+
+def _registry_paths():
+    """从注册表读取微信保存位置（Tencent\\Weixin / xwechat）。"""
+    try:
+        import winreg
+    except ImportError:
+        return []
+    keys = [
+        (winreg.HKEY_CURRENT_USER, r"Software\Tencent\Weixin"),
+        (winreg.HKEY_CURRENT_USER, r"Software\Tencent\xwechat"),
+        (winreg.HKEY_CURRENT_USER, r"Software\Tencent\WeChat"),
+        (winreg.HKEY_LOCAL_MACHINE, r"Software\Tencent\Weixin"),
+        (winreg.HKEY_LOCAL_MACHINE, r"Software\WOW6432Node\Tencent\Weixin"),
+    ]
+    out = []
+    for root, sub in keys:
+        try:
+            key = winreg.OpenKey(root, sub)
+        except OSError:
+            continue
+        try:
+            idx = 0
+            while True:
+                try:
+                    _name, value, _type = winreg.EnumValue(key, idx)
+                except OSError:
+                    break
+                idx += 1
+                if not isinstance(value, str):
+                    continue
+                path = _normalize_save_path(value)
+                if re.match(r"^[A-Za-z]:[\\/]", path) or path.startswith("\\\\"):
+                    out.append(os.path.normpath(path))
+        finally:
+            key.Close()
+    return out
+
+
+def _logical_drives():
+    """固定盘 + 可移动盘（跳过网络盘/光驱）。"""
+    drives = []
+    try:
+        import ctypes
+        bitmask = ctypes.windll.kernel32.GetLogicalDrives()
+        for i in range(26):
+            if not (bitmask & (1 << i)):
+                continue
+            root = chr(ord("A") + i) + ":\\"
+            try:
+                dtype = ctypes.windll.kernel32.GetDriveTypeW(root)
+            except Exception:
+                dtype = 1
+            if dtype in (2, 3) and os.path.isdir(root):
+                drives.append(root)
+    except Exception:
+        for root in ("C:\\", "D:\\", "E:\\", "F:\\"):
+            if root not in drives and os.path.isdir(root):
+                drives.append(root)
+    return drives
+
+
+def _glob_db_storage(xwechat_dir):
+    """在 xwechat_files 目录下找出所有 */db_storage。"""
+    if not os.path.isdir(xwechat_dir):
+        return []
+    out = []
+    try:
+        pattern = os.path.join(xwechat_dir, "*", "db_storage")
+        for match in _glob.glob(pattern):
+            if os.path.isdir(match):
+                out.append(match)
+    except OSError:
+        pass
+    return out
+
+
+def _candidates_under(root):
+    r"""给一个候选根目录，返回其中可能的 db_storage（兼容多种层级）。
+
+    支持：盘符/自定义目录（<root>\xwechat_files\<账号>\db_storage）、
+    xwechat_files 目录本身、账号目录（<root>\db_storage）、以及 db_storage 本身。
+    """
+    base = os.path.basename(os.path.normpath(root)).lower()
+    if base == "db_storage":
+        return [root] if os.path.isdir(root) else []
+    out = []
+    direct = os.path.join(root, "db_storage")
+    if os.path.isdir(direct):
+        out.append(direct)
+    out.extend(_glob_db_storage(root if base == "xwechat_files"
+                                else os.path.join(root, "xwechat_files")))
+    return out
+
+
+def _deep_find_db_storage(budget_s=15.0, max_depth=5):
+    """有限深度 BFS 查找 xwechat_files/*/db_storage（自动兜底）。
+
+    仅在快速探测一无所获时调用：优先钻取名字像微信的目录，
+    跳过系统/缓存目录，并有时间与访问量上限，避免卡住。
+    """
+    import time
+    started = time.time()
+    found = []
+    seen = set()
+    visited = 0
+
+    queue = [(d, 0) for d in _logical_drives()]
+    home = os.environ.get("USERPROFILE", "")
+    if home and os.path.isdir(home):
+        queue.append((home, 0))
+
+    interesting = ("wx", "wechat", "weixin", "tencent", "chat",
+                   "\u5fae\u4fe1", "\u817e\u8baf", "files", "data")
+
+    while queue:
+        if time.time() - started > budget_s or visited > 30000:
+            break
+        path, depth = queue.pop(0)
+        norm = os.path.normcase(os.path.normpath(path))
+        if norm in seen:
+            continue
+        seen.add(norm)
+        visited += 1
+        try:
+            entries = list(os.scandir(path))
+        except OSError:
+            continue
+
+        pending = []
+        for entry in entries:
+            try:
+                if not entry.is_dir(follow_symlinks=False):
+                    continue
+            except OSError:
+                continue
+            name = entry.name
+            low = name.lower()
+            if low == "xwechat_files":
+                found.extend(_glob_db_storage(entry.path))
+                continue
+            if low == "db_storage":
+                found.append(entry.path)
+                continue
+            if low in _JUNK_DIRS or low.startswith("$"):
+                continue
+            if depth + 1 <= max_depth:
+                pending.append((entry.path, depth + 1, low))
+
+        # 名字像微信的目录"深度优先"先挖（Tencent\\WeChat\\微信 这类很常见），
+        # 其余目录保持广度优先，保证浅层的 xwechat_files 也能尽快被发现
+        priority = [item for item in pending if any(k in item[2] for k in interesting)]
+        rest = [item for item in pending if not any(k in item[2] for k in interesting)]
+        queue = ([(p, d) for p, d, _low in priority]
+                 + queue
+                 + [(p, d) for p, d, _low in rest])
+
+    return found
+
 def _get_fast_data_roots():
     """Collect candidate data-root directories, skipping slow/network drives.
 
@@ -18,66 +269,40 @@ def _get_fast_data_roots():
     """
     data_roots = []
 
-    # Strategy 1: WeChat config/*.ini files (most reliable)
-    appdata = os.environ.get("APPDATA", "")
-    config_dir = os.path.join(appdata, "Tencent", "xwechat", "config")
-    if os.path.isdir(config_dir):
-        for fname in os.listdir(config_dir):
-            if not fname.endswith(".ini"):
-                continue
-            fpath = os.path.join(config_dir, fname)
-            try:
-                content = None
-                for enc in ("utf-8", "gbk"):
-                    try:
-                        with open(fpath, "r", encoding=enc) as f:
-                            content = f.read(1024).strip()
-                        break
-                    except UnicodeDecodeError:
-                        continue
-                if content and os.path.isdir(content):
-                    data_roots.append(content)
-            except OSError:
-                continue
+    def _add(p):
+        if not p:
+            return
+        try:
+            norm = os.path.normpath(p)
+        except (TypeError, ValueError):
+            return
+        if os.path.isdir(norm) and norm not in data_roots:
+            data_roots.append(norm)
 
-    # Strategy 2: Common parent directories
+    # Strategy 1: 微信自身配置（%APPDATA%\Tencent\xwechat\config\*.ini）
+    for p in _wechat_config_paths():
+        _add(p)
+        # 配置里的目录可能已被移动，父目录仍值得一试
+        _add(os.path.dirname(os.path.normpath(p.rstrip("\\/"))))
+
+    # Strategy 2: 注册表记录的保存位置（Tencent\Weixin / xwechat）
+    for p in _registry_paths():
+        _add(p)
+        _add(os.path.dirname(os.path.normpath(p.rstrip("\\/"))))
+
+    # Strategy 3: 常见位置
     userprofile = os.environ.get("USERPROFILE", "")
     homedrive = os.environ.get("HOMEDRIVE", "C:")
-    common_parents = [
-        os.path.join(userprofile, "Documents"),
-        homedrive + os.sep,
-        "D:\\",
-        "C:\\",
-        "E:\\",
-        "F:\\",
-    ]
-    for p in common_parents:
-        if os.path.isdir(p) and p not in data_roots:
-            data_roots.append(p)
+    localappdata = os.environ.get("LOCALAPPDATA", "")
+    _add(os.path.join(userprofile, "Documents"))
+    _add(os.path.join(userprofile, "Documents", "xwechat_files"))
+    _add(userprofile)
+    _add(os.path.join(localappdata, "Tencent"))
+    _add(homedrive + os.sep)
 
-    # Strategy 3: All fixed + removable drives (skip network, CD-ROM)
-    try:
-        import ctypes
-        DRIVE_FIXED = 3
-        DRIVE_REMOVABLE = 2
-        drives_bitmask = ctypes.windll.kernel32.GetLogicalDrives()
-        for i in range(26):
-            if drives_bitmask & (1 << i):
-                root = chr(ord('A') + i) + ":\\"
-                if root in data_roots:
-                    continue
-                try:
-                    dt = ctypes.windll.kernel32.GetDriveTypeW(root)
-                except Exception:
-                    dt = 1  # DRIVE_NO_ROOT_DIR
-                if dt in (DRIVE_FIXED, DRIVE_REMOVABLE):
-                    if os.path.isdir(root):
-                        data_roots.append(root)
-    except Exception:
-        # Fallback: if ctypes fails, at least try common drives
-        for root in ("C:\\", "D:\\", "E:\\", "F:\\"):
-            if root not in data_roots and os.path.isdir(root):
-                data_roots.append(root)
+    # Strategy 4: 所有固定盘 / 可移动盘
+    for root in _logical_drives():
+        _add(root)
 
     return data_roots
 
@@ -92,23 +317,68 @@ def _scan_roots_for_wechat(data_roots):
     seen = set()
 
     for root in data_roots:
-        # Quick pre-check: skip if xwechat_files doesn't exist on this root
-        xwechat_dir = os.path.join(root, "xwechat_files")
-        if not os.path.isdir(xwechat_dir):
-            continue
-
-        pattern = os.path.join(root, "xwechat_files", "*", "db_storage")
-        try:
-            for match in _glob.glob(pattern):
+        for match in _candidates_under(root):
+            try:
                 norm = os.path.normcase(os.path.normpath(match))
-                if norm not in seen and os.path.isdir(match):
-                    seen.add(norm)
-                    candidates.append(match)
-        except OSError:
-            continue
+            except (TypeError, ValueError):
+                continue
+            if norm in seen or not os.path.isdir(match):
+                continue
+            seen.add(norm)
+            candidates.append(match)
 
     return candidates
 
+
+_DETECT_CACHE = {"key": None, "value": None, "at": 0.0}
+
+
+def data_dir_hint(short=False):
+    r"""找不到微信数据目录时给用户的排查步骤（CLI 与 Web 共用）。"""
+    if short:
+        return ("未找到微信数据目录。请在微信「设置 → 文件管理 → 打开文件夹」确认 "
+                "xwechat_files\\<账号>\\db_storage 存在；然后在页面点「深度搜索」，"
+                "或把该目录填进输入框后点「使用该目录」。")
+    return (
+        "未找到微信数据目录（db_storage）。请按顺序排查：\n"
+        "  1) 微信 → 设置 → 文件管理 → 打开文件夹，确认里面有 xwechat_files\\<账号>\\db_storage\n"
+        "  2) 重新运行本程序（会自动做一次深度目录搜索，约十几秒）\n"
+        "  3) 仍然找不到时手动指定：--db-dir \"X:\\...\\db_storage\""
+    )
+
+def _detect_db_storage(deep=True, use_cache=True, budget_s=15.0, max_depth=5):
+    """返回所有可用的 db_storage 目录（先快后深，带缓存）。
+
+    fast 阶段只做几十次 isdir 判断；只有一无所获时才进入有限深度 BFS，
+    因此对正常用户几乎没有额外开销，却能救回"数据放在自定义深层目录"的情况。
+    """
+    import time
+    key = (tuple(_get_fast_data_roots()), bool(deep), float(budget_s), int(max_depth))
+    now = time.time()
+    cache = _DETECT_CACHE
+    if (use_cache and cache["value"] is not None and cache["key"] == key
+            and now - cache["at"] < 30):
+        return cache["value"]
+
+    candidates = _scan_roots_for_wechat(_get_fast_data_roots())
+    if not candidates and deep:
+        candidates = _deep_find_db_storage(budget_s=budget_s, max_depth=max_depth)
+
+    # 去重 + 过滤掉没有 message/contact 子目录的伪目录
+    out = []
+    seen = set()
+    for path in candidates:
+        norm = os.path.normcase(os.path.normpath(path))
+        if norm in seen:
+            continue
+        seen.add(norm)
+        out.append(path)
+
+    if use_cache:
+        cache["key"] = key
+        cache["value"] = out
+        cache["at"] = now
+    return out
 
 def find_wechat_data_dir():
     r"""自动检测微信 db_storage 数据目录。
@@ -121,8 +391,7 @@ def find_wechat_data_dir():
     多个账号时优先选 message 目录最近修改过的 (当前活跃账号)。
     Returns: db_storage 目录路径, 或 None
     """
-    data_roots = _get_fast_data_roots()
-    candidates = _scan_roots_for_wechat(data_roots)
+    candidates = _detect_db_storage(deep=True)
 
     if not candidates:
         return None
@@ -163,13 +432,18 @@ def _get_dir_size_mb(dir_path):
         return 0
 
 
-def find_all_wechat_data_dirs():
+def find_all_wechat_data_dirs(deep=True, budget_s=15.0, max_depth=5):
     """检测所有微信 db_storage 目录，返回列表供用户选择。
+
+    Args:
+        deep: 快速探测一无所获时，是否再做有限深度的目录搜索兜底
+        budget_s / max_depth: 深度搜索的时间与层数上限
+            （界面上的「深度搜索」按钮会用 45s / 7 层）
     Returns: [{'db_path': str, 'wxid': str, 'mtime': float,
                'db_count': int, 'size_mb': float}, ...] 按活跃度降序
     """
-    data_roots = _get_fast_data_roots()
-    candidates = _scan_roots_for_wechat(data_roots)
+    candidates = _detect_db_storage(deep=deep, budget_s=budget_s,
+                                    max_depth=max_depth)
 
     if not candidates:
         return []

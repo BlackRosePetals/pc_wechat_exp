@@ -56,7 +56,8 @@ def cmd_backup(args):
 
     dirs = find_all_wechat_data_dirs()
     if not dirs:
-        print("未找到微信数据目录。请确认微信已安装并至少登录过一次。")
+        from engine.utils import data_dir_hint
+        print(data_dir_hint())
         return
 
     # Resolve target account
@@ -195,7 +196,8 @@ def cmd_import_keys(args):
         except Exception:
             dirs = []
     if not db_dir or not _os.path.isdir(db_dir):
-        print("错误: 未找到微信数据目录 (db_storage)，请用 --db-dir 指定")
+        from engine.utils import data_dir_hint
+        print(data_dir_hint())
         return
 
     print("微信数据目录: " + db_dir)
@@ -354,7 +356,8 @@ def cmd_export(args):
         db_dir = args.db_dir or _resolve_db_dir()
         out_file = None  # keys are saved to .wechat_exp_config.json by default
         if not db_dir:
-            print("错误: 未找到微信数据目录。请先登录微信，或使用 --db-dir 指定 db_storage 路径")
+            from engine.utils import data_dir_hint
+            print(data_dir_hint())
             return
         print("=" * 56)
         print("  密钥提取")

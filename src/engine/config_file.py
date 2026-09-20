@@ -225,6 +225,28 @@ def remove_db_keys(rels) -> int:
     return removed
 
 
+def set_db_dir(db_dir: str) -> None:
+    """Persist the WeChat db_storage path chosen by the user.
+
+    Other features (backup / decrypt / keyscan) read this back via get_db_dir(),
+    so a manually picked directory only has to be entered once.
+    """
+    path = _config_path()
+    cfg = {}
+    try:
+        if os.path.isfile(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                cfg = json.load(f)
+    except (ValueError, OSError):
+        pass
+    cfg['_db_dir'] = str(db_dir)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+
 def get_db_dir() -> str | None:
     """Return the _db_dir (WeChat db_storage path) stored in config, or None."""
     path = _config_path()

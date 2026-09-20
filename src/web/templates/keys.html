@@ -11,8 +11,17 @@
   <div class="form-row">
     <div style="flex:3"><label>微信数据目录（db_storage）</label><select id="cfg-db-dir"></select></div>
     <div><label>&nbsp;</label><button class="btn" id="btn-refresh">刷新状态</button></div>
+    <div><label>&nbsp;</label><button class="btn" id="btn-deep">🔍 深度搜索</button></div>
   </div>
-  <div id="dir-hint" style="color:#8b949e;font-size:12px;margin-top:10px"></div>
+  <div class="form-row" style="margin-top:10px">
+    <div style="flex:4"><label>找不到目录？手动填写</label>
+      <input id="cfg-manual-dir" placeholder="例如: D:\WeChat\xwechat_files\wxid_xxx_1a2b\db_storage（填到 xwechat_files 或账号目录也可以）"></div>
+    <div><label>&nbsp;</label><button class="btn" id="btn-use-dir">使用该目录</button></div>
+  </div>
+  <div id="dir-hint" style="color:#8b949e;font-size:12px;margin-top:10px;line-height:1.8">
+    💡 找不到数据目录时：① 点「深度搜索」再找一遍（约 30–45 秒）；② 或在微信里打开
+    <b>设置 → 文件管理 → 打开文件夹</b>，把里面的 <code>xwechat_files\&lt;账号&gt;\db_storage</code> 路径填到上面。
+  </div>
 </div>
 
 <style>
@@ -78,27 +87,63 @@ function esc(s) { const d = document.createElement("div"); d.textContent = s == 
 
 function currentDir() { return el("cfg-db-dir").value || ""; }
 
-function loadDirs() {
-  return fetch("/api/keys/dirs").then(function (r) { return r.json(); }).then(function (data) {
-    const sel = el("cfg-db-dir");
-    sel.innerHTML = "";
-    const dirs = data.dirs || [];
-    if (!dirs.length && data.current) dirs.push({ db_path: data.current, wxid: "", db_count: 0, size_mb: 0 });
-    dirs.forEach(function (d) {
-      const o = document.createElement("option");
-      o.value = d.db_path;
-      o.textContent = d.db_path + (d.wxid ? "  (" + d.wxid + ")" : "");
-      sel.appendChild(o);
-    });
-    if (data.current) {
-      let found = false;
-      for (const o of sel.options) { if (o.value === data.current) { found = true; break; } }
-      if (!found) { const o = document.createElement("option"); o.value = data.current; o.textContent = data.current; sel.appendChild(o); }
-      sel.value = data.current;
+function applyDirs(data) {
+  const sel = el("cfg-db-dir");
+  sel.innerHTML = "";
+  const dirs = data.dirs || [];
+  if (!dirs.length && data.current) dirs.push({ db_path: data.current, wxid: "", db_count: 0, size_mb: 0 });
+  dirs.forEach(function (d) {
+    const o = document.createElement("option");
+    o.value = d.db_path;
+    o.textContent = d.db_path + (d.wxid ? "  (" + d.wxid + ")" : "");
+    sel.appendChild(o);
+  });
+  if (data.current) {
+    let found = false;
+    for (const o of sel.options) { if (o.value === data.current) { found = true; break; } }
+    if (!found) { const o = document.createElement("option"); o.value = data.current; o.textContent = data.current; sel.appendChild(o); }
+    sel.value = data.current;
+  }
+  return (data.dirs || []).length;
+}
+
+function loadDirs(mode) {
+  return fetch("/api/keys/dirs?mode=" + (mode || "auto")).then(function (r) { return r.json(); }).then(function (data) {
+    const n = applyDirs(data);
+    if (!n) {
+      el("dir-hint").innerHTML = "❌ <b>未自动检测到微信数据目录</b>：请点上面的「🔍 深度搜索」再找一遍；"
+        + "或在微信里打开「设置 → 文件管理 → 打开文件夹」，把 <code>xwechat_files\\&lt;账号&gt;\\db_storage</code> 路径填到输入框后点「使用该目录」。";
     }
-    if (!dirs.length) el("dir-hint").textContent = "未自动检测到微信数据目录，请确认微信已安装并登录过。";
-    else el("dir-hint").textContent = "共检测到 " + dirs.length + " 个数据目录，默认选择当前登录账号。";
+    return data;
   }).catch(function (e) { el("dir-hint").textContent = "读取目录失败: " + e; });
+}
+
+function deepSearch() {
+  const btn = el("btn-deep");
+  btn.disabled = true;
+  el("dir-hint").innerHTML = "🔍 正在深度搜索磁盘（最多 45 秒，请稍候）...";
+  fetch("/api/keys/dirs?mode=deep").then(function (r) { return r.json(); }).then(function (data) {
+    btn.disabled = false;
+    const n = applyDirs(data);
+    el("dir-hint").innerHTML = n
+      ? ("🔍 深度搜索完成，共找到 " + n + " 个数据目录。")
+      : "🔍 深度搜索仍未找到。请在微信里打开「设置 → 文件管理 → 打开文件夹」，把目录路径填到下面的输入框。";
+    loadStatus();
+  }).catch(function (e) { btn.disabled = false; el("dir-hint").textContent = "深度搜索失败: " + e; });
+}
+
+function useManualDir() {
+  const path = el("cfg-manual-dir").value.trim();
+  if (!path) { alert("请先填写微信数据目录路径"); return; }
+  fetch("/api/keys/dbdir", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path: path }) })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      if (data.error) { alert("失败: " + (data.message || data.error)); return; }
+      el("dir-hint").innerHTML = "✅ 已记住数据目录：<code>" + esc(data.dbDir) + "</code>（备份 / 解密 / 密钥都会用它）";
+      return loadDirs("fast").then(loadStatus);
+    })
+    .catch(function (e) { alert("请求失败: " + e); });
 }
 
 const ST = {
@@ -200,6 +245,8 @@ function submit(save) {
 }
 
 el("btn-refresh").addEventListener("click", function () { loadStatus(); });
+el("btn-deep").addEventListener("click", deepSearch);
+el("btn-use-dir").addEventListener("click", useManualDir);
 el("cfg-db-dir").addEventListener("change", function () { loadStatus(); });
 el("btn-save").addEventListener("click", function () { submit(true); });
 el("btn-verify").addEventListener("click", function () { submit(false); });
