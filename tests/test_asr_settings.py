@@ -87,6 +87,9 @@ class TestRecognize:
                 return Resp({"access_token": "T" * 24, "expires_in": 2592000})
             calls["asr"] += 1
             calls["last_payload"] = json.loads(kwargs.get("data", b"{}").decode("utf-8"))
+            # cuid/token 必须放在 JSON body：放到 URL 查询参数时百度会报
+            # "3311 param rate invalid."（真实踩坑，这里固定住该行为）
+            assert not kwargs.get("params"), "ASR 请求不应带 URL 查询参数"
             return Resp({"err_no": 0, "result": ["識別結果一。", "識別結果二。"], "sn": "1"})
 
         monkeypatch.setattr(ac.requests, "post", fake_post)
@@ -132,6 +135,12 @@ class TestRecognize:
         with pytest.raises(ac.AsrError) as ei:
             ac.recognize_wav(p, "key", "secret")
         assert "3301" in str(ei.value)
+        assert "音频质量" in str(ei.value)          # 错误码已翻译成中文提示
+
+    def test_error_hints(self):
+        assert "采样率" in ac.baidu_error_message(3311, "param rate invalid.")
+        assert "鉴权" in ac.baidu_error_message(3302, "auth")
+        assert ac.baidu_error_message(9999, "unknown").endswith("unknown")
 
 
 class TestSettings:

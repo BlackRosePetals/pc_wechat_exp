@@ -472,11 +472,6 @@
 <p><strong>解密数据库：</strong></p>
 <p>如果您已有备份的原始数据库文件但尚未解密，可以使用此功能单独解密。页面上同样有「<strong>🔍 深度搜索</strong>」与「<strong>使用该目录</strong>」按钮（说明见 <a href="#32-数据采集--一键备份">3.2 备份</a>），找不到微信数据目录时用它即可。</p>
 <hr>
-<ul>
-<li>识别模型可选：普通话（纯中文 / 带标点）、英语、粤语、四川话</li>
-<li>本地模型输出常为繁体，程序会<strong>自动转成简体</strong>（可在设置页关闭）</li>
-</ul>
-<hr>
 <h3 id="311">3.11 手动输入密钥（已有密钥的用户）</h3>
 <p><strong>适用场景</strong>：你手上已经有密钥了——可能是以前用别的工具提取的、从旧备份里翻出来的，或者换了新版本微信后自动提取不到。这时不需要再折腾提取流程，直接把手上的密钥粘进来即可。</p>
 <p>点击仪表盘「工具」模块中的「<strong>手动输入密钥</strong>」进入本页面（地址 <code>/keys</code>）。</p>
@@ -561,6 +556,8 @@
 - Key 只保存在本机 exe 同目录的 <code>.wechat_exp_config.json</code>，界面上只显示后 4 位，不会上传到别处<br>
 - 百度接口限制单次 ≤ 60 秒音频，程序会<strong>自动重采样到 16kHz 并按 55 秒切片</strong>后依次识别<br>
 - 识别模型可选：普通话（纯中文 / 带标点）、英语、粤语、四川话<br>
+- <strong>只需要 API Key + Secret Key 两项</strong>（REST 接口走 access_token 鉴权；控制台里的 <strong>AppID 不用填</strong>，那是移动端 SDK 用的）。若报 3302 请确认应用已开通「短语音识别」<br>
+- 常见报错会自动翻译成中文：3302 鉴权失败、3304 当天额度用完、3305 / 3312 音频超过 60 秒、3308 / 3311 采样率或格式问题等<br>
 - 本地模型中文输出常为繁体，程序会<strong>自动转成简体</strong>（可在设置页关闭）</p>
 <blockquote>
 <p>切换引擎后立即生效：聊天里点语音气泡的「T」即按当前引擎识别。选了百度但还没填 Key 时，气泡里会提示去设置页填写。</p>
@@ -871,6 +868,23 @@
 - 默认下载源是 <code>hf-mirror.com</code>（国内镜像，实测 76MB 约 1 分钟）；失败时提示重试<br>
 - 也可以手动下载（HuggingFace <code>Xenova/whisper-base</code>）后把文件放进 <code>%LOCALAPPDATA%\WeChatEXP\models\Xenova\whisper-base\</code>（保留 <code>onnx\</code> 子目录结构）<br>
 - 识别质量与速度：Tiny 最快但较粗 → <strong>Base 均衡（默认）</strong> → Small 更准但更慢、下载更大</p>
+<hr>
+<h3 id="q16">Q16：语音时长显示不对（每条都显示同一个秒数）/ 转文字看着只有一行</h3>
+<p><strong>现象</strong>：列表和播放器里所有语音都显示同一个时长（例如一律 <code>48″</code>），<br>
+于是一条 11 秒的语音看起来像 48 秒，转写只出一行字，很像「长语音被截断成一行」。</p>
+<p><strong>原因（v2.9 起已修复）</strong>：界面此前把消息 protobuf 里的一个字段当成了语音长度，<br>
+而它<strong>并不是语音长度</strong> —— 实测同一个会话里所有语音取到的都是同一个值。<br>
+微信自己记录的时长在语音消息 XML 的 <code>&lt;voicemsg voicelength="毫秒"&gt;</code> 字段里。</p>
+<p><strong>现在的行为</strong>：</p>
+<ul>
+<li>语音时长以微信记录的 <code>voicelength</code> 为准（毫秒 → 秒），列表与播放器显示一致</li>
+<li>播放器在音频加载完成后，还会用<strong>音频的真实长度</strong>再校正一次</li>
+<li>转写文字是<strong>完整结果</strong>：短语音就是一行；长语音自动换行显示整段，<br>
+<strong>不会截断、也不会出现省略号</strong>（<code>.vp-trans-result</code> 显式声明了 <code>white-space: pre-wrap</code>）</li>
+</ul>
+<blockquote>
+<p>💡 想确认一条语音到底多长：看气泡上的秒数（已修正），或播放时播放器显示的时长。</p>
+</blockquote>
 <hr>
 <h2 id="7">7. 附录：命令行参考（高级用户）</h2>
 <p>以下内容适用于熟悉命令行的<strong>高级用户</strong>。普通用户无需了解此部分，直接双击 exe 使用即可。</p>

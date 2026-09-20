@@ -36,6 +36,31 @@ class AsrError(RuntimeError):
     """商业 ASR 调用失败（带用户可读信息）。"""
 
 
+# 百度常见错误码 → 给用户看得懂的提示（附带原始错误信息）
+BAIDU_ERROR_HINTS = {
+    3300: "输入参数不正确（检查识别模型 dev_pid 与音频格式）",
+    3301: "音频质量太差，无法识别",
+    3302: "鉴权失败：API Key / Secret Key 不正确，或应用未开通「短语音识别」",
+    3303: "百度服务端错误，稍后重试",
+    3304: "当天请求量已达上限（免费额度用完或 QPS 超限）",
+    3305: "音频过长：单次不能超过 60 秒（程序会自动切片）",
+    3307: "音频数据为空或读取失败",
+    3308: "音频格式不支持（需 16k/8k、单声道、16bit PCM 或 WAV）",
+    3309: "音频采样率与参数不一致",
+    3310: "音频格式或采样率不支持",
+    3311: "采样率参数不合法（本程序固定 16000；出现请联系开发者）",
+    3312: "音频长度超出限制（需 ≤ 60 秒）",
+    3313: "音频解码失败",
+}
+
+
+def baidu_error_message(err_no, err_msg) -> str:
+    """把百度错误码翻译成用户可读信息。"""
+    hint = BAIDU_ERROR_HINTS.get(err_no)
+    base = "百度返回错误 %s: %s" % (err_no, err_msg)
+    return base + ("（%s）" % hint if hint else "")
+
+
 def to_simplified(text: str) -> str:
     """繁体 → 简体（Whisper 中文输出常为繁体）。失败时原样返回。"""
     if not text:
@@ -166,8 +191,9 @@ def recognize_wav(path: str, api_key: str, secret_key: str, dev_pid: int = 1537,
             "len": len(piece),
         }
         try:
+            # 注意：cuid/token 必须放在 JSON body 里。放进 URL 查询参数时百度的
+            # 新版接口会按老接口解析，直接报 “3311 param rate invalid.”（实测确认）
             resp = requests.post(BAIDU_ASR_URL,
-                                 params={"cuid": "wechat_exp", "token": token},
                                  data=json.dumps(payload).encode("utf-8"),
                                  headers={"Content-Type": "application/json"},
                                  timeout=60)
@@ -175,7 +201,7 @@ def recognize_wav(path: str, api_key: str, secret_key: str, dev_pid: int = 1537,
         except Exception as e:
             raise AsrError("调用百度语音识别失败: %s" % e)
         if data.get("err_no") not in (0, None):
-            raise AsrError("百度返回错误 %s: %s" % (data.get("err_no"), data.get("err_msg")))
+            raise AsrError(baidu_error_message(data.get("err_no"), data.get("err_msg")))
         for line in (data.get("result") or []):
             texts.append(line.strip())
     return {"text": to_simplified("".join(texts)), "chunks": chunk_count, "engine": "baidu"}

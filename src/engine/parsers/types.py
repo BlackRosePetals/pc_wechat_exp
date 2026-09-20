@@ -120,10 +120,15 @@ def parse_voice(xml_bytes):
     voicemsg = root.find('.//voicemsg')
     if voicemsg is None:
         return {'text': '[语音]', 'voice_path': None, 'duration': None}
+    # voicelength 是毫秒（WeChat 4.x），统一换算成秒再交给上层；length 是音频
+    # 字节数，不能当秒用（历史上这里两者混用，导致界面显示错误时长）。
+    raw_len = (voicemsg.get('voicelength') or '').strip()
+    ms = int(raw_len) if raw_len.isdigit() else 0
     return {
         'text': '[语音]',
         'voice_path': voicemsg.get('voiceurl') or voicemsg.get('bufid'),
-        'duration': int(voicemsg.get('voicelength', 0) or voicemsg.get('length', 0)),
+        'duration': int(round(ms / 1000.0)) if ms > 0 else None,
+        'duration_ms': ms or None,
     }
 
 

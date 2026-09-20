@@ -43,8 +43,9 @@ class MessageBubble extends Component {
     let content;
     if (m.msg_type === 1) {
       content = escapeHtml(m.content || '');
-    } else if (m.msg_type === 34 && m.media_info && m.media_info.duration) {
-      const dur = m.media_info.duration;
+    } else if (m.msg_type === 34 && ((m.xml_parsed && m.xml_parsed.duration) || (m.media_info && m.media_info.duration))) {
+      // 优先用 XML 里的真实时长（秒）；media_info.duration 是 packed_info 的字段，不可靠
+      const dur = (m.xml_parsed && m.xml_parsed.duration) || m.media_info.duration;
       const durStr = dur >= 60 ? `${Math.floor(dur/60)}′${dur%60}″` : `${dur}″`;
       content = `<span class="msg-type-tag voice">语音</span> ${durStr}`;
     } else if ((m.msg_type === 3 || m.msg_type === 43 || m.msg_type === 6) && m.media_info) {
@@ -133,7 +134,7 @@ class MessageBubble extends Component {
       break;
     }
     case 34: {
-      const dur = (m.media_info && m.media_info.duration) || p.duration || 0;
+      const dur = p.duration || (m.media_info && m.media_info.duration) || 0;
       let durText = '';
       if (dur > 0) {
         durText = dur >= 60 ? `${Math.floor(dur/60)}′${dur%60}″` : `${dur}″`;

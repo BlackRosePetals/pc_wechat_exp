@@ -601,6 +601,14 @@ def _row_to_message(row, chat_id: str, decrypted_dir: str = '', parse_xml: bool 
                                             local_id=local_id, create_time=create_time,
                                             chat_id=chat_id)
 
+    # 语音时长以 XML 的 <voicemsg voicelength>（毫秒）为准：packed_info 的字段 1
+    # 并不是真实时长（实测多条长度完全不同的语音取到的都是同一个值），曾经导致
+    # 界面上所有语音都显示同一个时长（如 48″），让人误以为长语音的转写被截断。
+    if ltype == 34 and isinstance(xml_parsed, dict) and xml_parsed.get('duration'):
+        if media_info is None:
+            media_info = {'media_type': 34}
+        media_info['duration'] = xml_parsed['duration']
+
     # Fallback for type 49: extract md5 from XML content when protobuf lacks it.
     # Type 49 appmsg file attachments store md5 in <md5> inside <appattach>,
     # not in packed_info_data protobuf.
