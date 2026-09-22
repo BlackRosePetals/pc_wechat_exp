@@ -24,6 +24,12 @@ class AddressBookList extends Component {
         if (c.msg_count > 0) {
           msgBadge = '<span class="addr-msg-badge">' + c.msg_count.toLocaleString() + '条</span>';
         }
+        var labelBadges = '';
+        if (c.labels && c.labels.length) {
+          labelBadges = '<div class="addr-item-labels">' + c.labels.map(function(name) {
+            return '<span class="label-chip">' + escapeHtml(name) + '</span>';
+          }).join('') + '</div>';
+        }
         var avatarFallbackStyle = 'width:40px;height:40px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;font-size:18px;font-weight:700;color:white;flex-shrink:0;background:' + _avatarColor(c.wxid || '');
         var avatarChar = _avatarChar(c.display_name || c.wxid);
         var avatarHtml = '<img class="addr-avatar" src="' + escapeAttr(c.avatar_url) + '" loading="lazy" alt=""' +
@@ -33,6 +39,7 @@ class AddressBookList extends Component {
           '<div class="addr-item-info">' +
           '<div class="addr-item-name">' + escapeHtml(c.display_name || c.wxid) + '</div>' +
           '<div class="addr-item-sub">' + escapeHtml(subtitle) + '</div>' +
+          labelBadges +
           '</div>' +
           msgBadge +
           '</div>';

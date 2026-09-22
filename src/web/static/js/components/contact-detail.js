@@ -20,6 +20,14 @@ class ContactDetail extends Component {
     if (data.nick_name && data.nick_name !== data.display_name) fields.push('<div class="detail-field"><span class="detail-label">昵称</span><span>' + escapeHtml(data.nick_name) + '</span></div>');
     if (data.alias) fields.push('<div class="detail-field"><span class="detail-label">微信号</span><span style="font-family:monospace;font-size:0.85em">' + escapeHtml(data.alias) + '</span></div>');
 
+    // 微信标签（来自 contact.extra_buffer field 30 → contact_label）
+    if (data.labels && data.labels.length) {
+      var labelChips = data.labels.map(function(name) {
+        return '<span class="label-chip">' + escapeHtml(name) + '</span>';
+      }).join('');
+      fields.push('<div class="detail-field"><span class="detail-label">标签</span><span>' + labelChips + '</span></div>');
+    }
+
     // Phone: either stored phone field or wxid that looks like a phone number
     if (data.phone) fields.push('<div class="detail-field"><span class="detail-label">手机号</span><span style="font-family:monospace">' + escapeHtml(data.phone) + '</span></div>');
 

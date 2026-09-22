@@ -343,11 +343,13 @@ def backup_hook_keyscan():
                     push.error("py_wx_key 模块未安装，无法使用Hook模式")
                     return
 
-            # psutil check
+            # psutil check — 只改文案（控制流不动）：说清「为什么」和「什么不受影响」
             try:
-                import psutil
+                import psutil  # noqa: F401
             except ImportError:
-                push.error("psutil 模块未安装")
+                push.error("此策略需要 psutil 枚举微信进程，当前环境未提供"
+                           "（可能是精简安装或旧版本 exe）；"
+                           "只读 Config.Cipher 扫描不受影响")
                 return
 
             # Collect DB info

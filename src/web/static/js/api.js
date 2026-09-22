@@ -36,6 +36,21 @@ const api = {
     if (params.type) qs.set('type', params.type);
     if (params.sender) qs.set('sender', params.sender);
     if (params.keyword) qs.set('keyword', params.keyword);
+    // T19：深链定位参数（`/chat?open=..&focus=<local_id>&ft=<create_time>`，见
+    // `app.js` 与 `.docs/agent-context/03-interfaces/api.md` 的 A1.2）。
+    // URL 的组装**只有这一处** —— Task 18 因为这份白名单漏了这两项，在页面里复制了
+    // 一份 URL 组装来绕开，本轮收掉。
+    // ⚠️ 判据**不是**真值判断：`focus_local_id=0` / `focus_create_time=0` 是**合法**取值
+    // （页面的 `_focusIntOrNull` 接受 0），用真值判断会把它们丢掉 ⇒ 后端只收到一半参数
+    // → 400，而页面会把"参数错"显示成"加载消息失败"。
+    if (params.focus_local_id !== undefined && params.focus_local_id !== null
+        && params.focus_local_id !== '') {
+      qs.set('focus_local_id', params.focus_local_id);
+    }
+    if (params.focus_create_time !== undefined && params.focus_create_time !== null
+        && params.focus_create_time !== '') {
+      qs.set('focus_create_time', params.focus_create_time);
+    }
     return fetchJSON(`/api/messages?${qs.toString()}`, signal);
   },
   messageDetail(id, chatId) { const signal = cancelPending(); return fetchJSON(`/api/messages/${id}?chat_id=${encodeURIComponent(chatId||'')}`, signal); },
@@ -82,7 +97,45 @@ const api = {
     return fetchJSON('/api/address-book' + qs, signal);
   },
   addressBookGroups() { const signal = cancelPending(); return fetchJSON('/api/address-book/groups', signal); },
-  addressBookExportUrl() { return '/api/address-book/export'; },
+  addressBookLabels() { const signal = cancelPending(); return fetchJSON('/api/address-book/labels', signal); },
+  search(q, params) {
+    const signal = cancelPending();
+    const parts = ['q=' + encodeURIComponent(q || '')];
+    Object.keys(params || {}).forEach(function(k) {
+      if (params[k] !== undefined && params[k] !== null && params[k] !== '') {
+        parts.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k]));
+      }
+    });
+    return fetchJSON('/api/search?' + parts.join('&'), signal);
+  },
+  // 索引状态**不**走 `cancelPending()`（T9-A2）。
+  // `cancelPending()` 会 abort 上一个请求，而"上一个请求"很可能正是**用户刚发起的
+  // 搜索**：状态条刷新一下就把搜索静默取消了（页面只看到一句莫名错误）。
+  // 状态有自己的生命周期，永不取消别的请求；它自己也不需要被取消（实测热路径
+  // 3.0–3.7ms，而且页面从不 await 它）。页面对失败/挂住的处理是 `.catch` 隐藏状态条。
+  searchStatus() { return fetchJSON('/api/search/status', new AbortController().signal); },
+  // 构建**不得**带 `cancelPending()` 的 signal：任何一次搜索都会把构建流 abort 掉，
+  // 而构建是一次写库操作，中途断开会留下半成品索引。
+  searchBuild(body) {
+    return fetch('/api/search/index', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    });
+  },
+  addressBookExportUrl(params) {
+    var qs = '';
+    if (params) {
+      var parts = [];
+      Object.keys(params).forEach(function(k) {
+        if (params[k] !== undefined && params[k] !== null && params[k] !== '') {
+          parts.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k]));
+        }
+      });
+      if (parts.length) qs = '?' + parts.join('&');
+    }
+    return '/api/address-book/export' + qs;
+  },
   cleanupAnalyze() { const signal = cancelPending(); return fetchJSON('/api/cleanup/analyze', signal); },
   cleanupPreview(params) {
     const signal = cancelPending();

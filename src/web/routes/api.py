@@ -1,7 +1,8 @@
 """REST API endpoints."""
 import os
+import re
 import sys
-from flask import Blueprint, request, jsonify, current_app
+from flask import Blueprint, request, jsonify, current_app, make_response
 
 # Ensure src/ is on path for engine imports
 _BASE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -11,9 +12,10 @@ if _BASE not in sys.path:
 from engine.services.chat import get_contacts
 from engine.services.message import query_messages, query_message_detail, get_chat_stats, get_chat_dates
 from engine.services.media import serve_media, serve_hardlink_media, serve_voice, transcribe_voice, decrypt_emoticon_aes_cbc
-from engine.services.address_book import get_all_contacts, get_all_groups
-import csv
-import io
+from engine.services.address_book import (get_all_contacts, get_all_groups,
+                                          filter_contacts, distinct_labels)
+from engine.services.contact_extra import load_labels
+from engine.services.name_resolver import _find_contact_db
 
 api_bp = Blueprint('api', __name__)
 
@@ -22,6 +24,20 @@ def _cfg():
     return (current_app.config.get('DECRYPTED_DIR', ''),
             current_app.config.get('WXID'),
             current_app.config.get('DB_DIR'))
+
+
+# 深链定位参数：严格非负整数。`request.args.get(..., type=int)` **不能**用 ——
+# Flask 的 `type=int` 在解析失败时**静默回退默认值**（`'abc'` → None），
+# 那正是本 issue 要根除的"静默"。
+_FOCUS_INT_RE = re.compile(r'^[0-9]+$')
+
+
+def _focus_nonneg_int(name: str, raw: str) -> int:
+    """`focus_*` 参数解析：非非负整数 → `ValueError(name)`（调用方转 400）。"""
+    s = (raw or '').strip()
+    if not _FOCUS_INT_RE.match(s):
+        raise ValueError(name)
+    return int(s)
 
 
 @api_bp.route('/contacts')
@@ -47,6 +63,21 @@ def messages():
         return jsonify({'error': 'page must be >= 1'}), 400
     if per_page < 1 or per_page > 200:
         return jsonify({'error': 'per_page must be between 1 and 200'}), 400
+    # 深链定位（Task 18 / known-issues #29）：两个参数**必须成对**给且都是非负整数。
+    # 只给一个、给了非整数 —— 一律 400，**不得**静默忽略（静默忽略的表现就是
+    # "点了搜索结果却落在第 1 页"，正是这条 issue 的现象）。
+    focus_raw_id = request.args.get('focus_local_id')
+    focus_raw_ts = request.args.get('focus_create_time')
+    if (focus_raw_id is None) != (focus_raw_ts is None):
+        return jsonify({'error': 'focus_local_id 与 focus_create_time 必须成对给出'
+                                 '（都是非负整数）'}), 400
+    focus_local_id = focus_create_time = None
+    if focus_raw_id is not None:
+        try:
+            focus_local_id = _focus_nonneg_int('focus_local_id', focus_raw_id)
+            focus_create_time = _focus_nonneg_int('focus_create_time', focus_raw_ts)
+        except ValueError as e:
+            return jsonify({'error': '%s 必须是非负整数' % e.args[0]}), 400
     try:
         result = query_messages(
             decrypted_dir, chat_id, wxid=wxid,
@@ -56,6 +87,8 @@ def messages():
             msg_types=request.args.get('type'),
             sender=request.args.get('sender'),
             keyword=request.args.get('keyword'),
+            focus_local_id=focus_local_id,
+            focus_create_time=focus_create_time,
         )
     except FileNotFoundError as e:
         return jsonify({'error': str(e), 'messages': [], 'pagination': {'page': 1, 'per_page': 50, 'total': 0, 'total_pages': 1}}), 404
@@ -314,47 +347,21 @@ def address_book():
         sort     — 'name' (default), 'msg_count', 'last_time'
         has_chat — '1' (only with chats), '0' (only without)
         letter   — filter by first letter of display_name
+        kind     — 'all' (default), 'contacts' (exclude groups), 'groups' (groups only)
+        label    — filter by WeChat label/tag name (e.g. 'only_work')
         page     — page number (default 1)
         per_page — items per page (default 100, max 500)
     """
     decrypted_dir, wxid, db_dir = _cfg()
-    contacts = get_all_contacts(decrypted_dir)
-
-    q = request.args.get('q', '').strip().lower()
-    sort = request.args.get('sort', 'name')
-    has_chat = request.args.get('has_chat')
-    letter = request.args.get('letter', '').strip().upper()
-
-    if q:
-        def _match(c):
-            if q in c['display_name'].lower():
-                return True
-            if q in c['remark'].lower():
-                return True
-            if q in c['nick_name'].lower():
-                return True
-            if q in c['alias'].lower():
-                return True
-            if q in c['wxid'].lower():
-                return True
-            if c.get('phone') and q in c['phone']:
-                return True
-            if c.get('description') and q in c['description'].lower():
-                return True
-            return False
-        contacts = [c for c in contacts if _match(c)]
-    if has_chat == '1':
-        contacts = [c for c in contacts if c['msg_count'] > 0]
-    elif has_chat == '0':
-        contacts = [c for c in contacts if c['msg_count'] == 0]
-    if letter:
-        contacts = [c for c in contacts
-                    if (c['display_name'] or c['wxid'])[:1].upper() == letter]
-
-    if sort == 'msg_count':
-        contacts.sort(key=lambda c: c['msg_count'], reverse=True)
-    elif sort == 'last_time':
-        contacts.sort(key=lambda c: c['last_msg_time'] or 0, reverse=True)
+    contacts = filter_contacts(
+        get_all_contacts(decrypted_dir),
+        q=request.args.get('q', ''),
+        sort=request.args.get('sort', 'name'),
+        has_chat=request.args.get('has_chat'),
+        letter=request.args.get('letter', ''),
+        kind=request.args.get('kind', 'all'),
+        label=request.args.get('label'),
+    )
 
     # Pagination
     total = len(contacts)
@@ -379,6 +386,20 @@ def address_book():
         'per_page': per_page,
         'total_pages': total_pages,
     })
+
+
+@api_bp.route('/address-book/labels')
+def address_book_labels():
+    """Return the selectable label (tag) names for the address book filter.
+
+    Union of contact_label definitions and labels actually seen on contacts,
+    so a tag defined in WeChat but not yet used is still discoverable.
+    """
+    decrypted_dir, _, _ = _cfg()
+    names = set(distinct_labels(get_all_contacts(decrypted_dir)))
+    names.update(load_labels(_find_contact_db(decrypted_dir)).values())
+    names.discard('')
+    return jsonify({'labels': sorted(names)})
 
 
 @api_bp.route('/address-book/<wxid>')
@@ -427,40 +448,39 @@ def address_book_groups():
 
 @api_bp.route('/address-book/export')
 def address_book_export():
-    """Export contacts as CSV."""
+    """Export contacts as xlsx / csv / html.
+
+    Query params mirror /api/address-book (q / sort / has_chat / letter / kind)
+    so the downloaded file matches what the user is currently looking at.
+    ``format`` defaults to csv — the original hard-coded endpoint only ever
+    produced CSV, and existing links/bookmarks must keep working.
+    """
+    from contacts_export import MIMETYPES, default_filename, render
+
     decrypted_dir, _, _ = _cfg()
-    contacts = get_all_contacts(decrypted_dir)
+    kind = request.args.get('kind', 'all')
+    fmt = (request.args.get('format') or 'csv').strip().lower().lstrip('.')
 
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(['wxid', 'display_name', 'remark', 'nick_name', 'alias',
-                     'phone', 'sex', 'region', 'signature', 'description',
-                     'msg_count', 'last_msg_time', 'is_group'])
-    SEX_MAP = {0: '', 1: '男', 2: '女'}
-    for c in contacts:
-        sex_label = SEX_MAP.get(c.get('sex'), '')
-        region = ' '.join(filter(None, [c.get('country', ''), c.get('province', ''), c.get('city', '')]))
-        writer.writerow([
-            c['wxid'], c['display_name'], c['remark'], c['nick_name'],
-            c['alias'],
-            c.get('phone', ''),
-            sex_label,
-            region,
-            c.get('signature', ''),
-            c.get('description', ''),
-            c['msg_count'],
-            c['last_msg_time'] or '',
-            'Y' if c['is_group'] else 'N',
-        ])
-
-    from flask import Response
-    csv_str = output.getvalue()
-    output.close()
-    return Response(
-        csv_str,
-        mimetype='text/csv',
-        headers={'Content-Disposition': 'attachment; filename=address_book.csv'}
+    contacts = filter_contacts(
+        get_all_contacts(decrypted_dir),
+        q=request.args.get('q', ''),
+        sort=request.args.get('sort', 'name'),
+        has_chat=request.args.get('has_chat'),
+        letter=request.args.get('letter', ''),
+        kind=kind,
+        label=request.args.get('label'),
     )
+
+    try:
+        data = render(contacts, fmt)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+
+    filename = default_filename(fmt, kind)
+    resp = make_response(data)
+    resp.headers['Content-Type'] = MIMETYPES[fmt]
+    resp.headers['Content-Disposition'] = 'attachment; filename=%s' % filename
+    return resp
 
 @api_bp.route("/settings/asr", methods=["GET"])
 def asr_settings_get():

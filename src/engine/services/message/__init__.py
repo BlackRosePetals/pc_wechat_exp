@@ -540,6 +540,13 @@ def _row_to_message(row, chat_id: str, decrypted_dir: str = '', parse_xml: bool 
         content_sender = _clean_sender_prefix(parts[0])
         display_content = parts[1] if len(parts) > 1 else content
 
+    # 展示用 content：群聊收到的消息在库里带 "sender_wxid:\n" 前缀，而这个发送者已经
+    # 由 sender_name / sender_wxid 单独给出，正文里再留一份 wxid 属于重复且泄漏身份；
+    # 更关键的是 Web UI 用 `white-space: pre-wrap` 渲染正文后，那个前缀会独占一行。
+    # 因此 `content` 统一返回剥离后的展示文本，原始字符串保留在 `content_raw`。
+    content_raw = content
+    content = display_content
+
     # Resolve sender name for group chats
     sender_wxid = None
     if is_group and not is_sender:
@@ -625,6 +632,8 @@ def _row_to_message(row, chat_id: str, decrypted_dir: str = '', parse_xml: bool 
     # Apply emoji translation to text message content field
     if ltype == 1 and isinstance(content, str) and content:
         content = translate_wechat_emoji(content)
+        if isinstance(content_raw, str) and content_raw:
+            content_raw = translate_wechat_emoji(content_raw)
 
     # Translate emoji in xml_parsed text fields
     if xml_parsed and isinstance(xml_parsed, dict):
@@ -640,6 +649,7 @@ def _row_to_message(row, chat_id: str, decrypted_dir: str = '', parse_xml: bool 
         'sender_name': sender_name,
         'sender_wxid': sender_wxid,
         'content': content,
+        'content_raw': content_raw,
         'create_time': create_time,
         'xml_parsed': xml_parsed,
         'real_sender_id': real_sender_id,
@@ -876,17 +886,32 @@ def _build_sender_map(conn, table_name: str, own_wxid: str = None, chat_id: str 
     return sender_map
 
 
+# `focused.message`：`found=False` 时的**人话文案**（必须明确，绝不静默）。
+# 只有一种原因：行不在（筛选后的）结果集里 —— 消息可能已被删除、换了账号，
+# 或当前筛选条件把它排除了。"参数非法"不走这条路，由调用方返回 400。
+FOCUS_NOT_FOUND_MESSAGE = '该消息不在当前会话的查询结果中（可能已被删除、不属于当前账号，或被筛选条件排除）'
+
+
 def query_messages(decrypted_dir: str, chat_id: str, wxid: str = None,
                    page: int = 1, per_page: int = 50,
                    start_date: str = None, end_date: str = None,
                    msg_types: str = None, sender: str = None,
-                   keyword: str = None) -> dict:
+                   keyword: str = None,
+                   focus_local_id: int = None,
+                   focus_create_time: int = None) -> dict:
     """Paginated message query for a specific chat.
 
     Pagination: most recent messages on page 1. Within a page, oldest first.
 
     Queries ALL message_*.db shards that contain this chat's Msg_<hash> table.
     WeChat 4.x distributes a chat's messages across multiple DB files.
+
+    **深链定位（Task 18 / `known-issues.md` #29）**：给 `focus_local_id` +
+    `focus_create_time` 时**忽略 `page`**，返回包含该消息的那一页（页内排序不变），
+    并在返回值里**新增** `focused` 块。定位键必须**同时**含 `create_time`：
+    `local_id` 在不同分片间会重号（`msg_meta` 主键含 `create_time`，见 ADR-0012）。
+    没找到时 `focused.found=False` 且带 `reason` / `message` —— 绝不静默当成功。
+    两个参数都没给时返回值**逐字段与改动前相同**（不多出 `focused` 键）。
     """
     per_page = max(1, per_page)  # guard against ZeroDivisionError
     all_dbs = _find_all_chat_dbs(decrypted_dir, chat_id)
@@ -942,6 +967,35 @@ def query_messages(decrypted_dir: str, chat_id: str, wxid: str = None,
     # Sort by create_time DESC across all shards, then paginate
     all_rows.sort(key=lambda r: r[1][3] or 0, reverse=True)
 
+    # ---- 深链定位：把「目标消息在第几页」直接算出来（不需要新的查询模式）----
+    # `all_rows` 已经是全量 DESC 序，所以目标的下标 → 页号只是整除：
+    #     下标 i 落在第 (i // per_page + 1) 页（与下面的 offset 切分同一套语义）。
+    # 只在**两个** focus 参数都给时生效（非法参数由 API 层拦成 400）。
+    focus_active = focus_local_id is not None and focus_create_time is not None
+    focused = None
+    if focus_active:
+        target_index = None
+        for i, (_fdb, frow) in enumerate(all_rows):
+            # 必须两列同时相等：local_id 在不同分片间会重号（行 0 = local_id，行 3 = create_time）
+            if frow[0] == focus_local_id and frow[3] == focus_create_time:
+                target_index = i
+                break
+        found = target_index is not None and total > 0
+        if found:
+            page = target_index // per_page + 1
+            page = max(1, min(page, total_pages))
+        else:
+            # 没定位到也要落在**一个合理页**上，并且把原因说清楚（不得静默）
+            page = 1
+        focused = {
+            'found': found,
+            'page': page,
+            'local_id': focus_local_id,
+            'create_time': focus_create_time,
+            'reason': None if found else 'not_in_chat',
+            'message': None if found else FOCUS_NOT_FOUND_MESSAGE,
+        }
+
     offset = (page - 1) * per_page
     page_rows = all_rows[offset:offset + per_page]
 
@@ -956,7 +1010,7 @@ def query_messages(decrypted_dir: str, chat_id: str, wxid: str = None,
                               own_wxid=wxid)
         messages.append(msg)
 
-    return {
+    result = {
         'messages': messages,
         'pagination': {
             'page': page,
@@ -965,6 +1019,10 @@ def query_messages(decrypted_dir: str, chat_id: str, wxid: str = None,
             'total_pages': total_pages,
         },
     }
+    if focused is not None:
+        # 只在**给了** focus 时新增这个块（不带 focus 的调用方响应逐字段不变）
+        result['focused'] = focused
+    return result
 
 
 def _find_all_msg_dbs(decrypted_dir: str) -> list:

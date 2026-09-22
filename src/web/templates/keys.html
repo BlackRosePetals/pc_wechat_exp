@@ -44,23 +44,33 @@ table.kv-table th { text-align:left; padding:6px 8px; color:#8b949e; font-size:1
 </div>
 
 <div class="config-panel" style="margin-top:16px">
-  <h3 style="margin:0 0 12px 0;font-size:15px;color:#eee">粘贴密钥</h3>
-  <textarea id="cfg-text" rows="8" spellcheck="false" style="width:100%;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:8px;padding:10px;font-family:Consolas,monospace;font-size:13px"
-    placeholder="message_0.db = 1a2b3c...(64位十六进制密钥)&#10;message/message_1.db: 4d5e6f...&#10;x'7a8b9c...(64位key)d4e5f6...(32位salt)'&#10;9f8e7d...(只写密钥，自动匹配数据库)"></textarea>
+  <h3 style="margin:0 0 12px 0;font-size:15px;color:#eee">粘贴密钥 / 密钥扫描日志</h3>
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+    <input type="file" id="cfg-file" accept=".txt,.log,.json,.csv,text/*"
+           style="font-size:12px;color:#8b949e">
+    <span id="cfg-file-info" style="font-size:12px;color:#8b949e"></span>
+  </div>
+  <textarea id="cfg-text" rows="10" spellcheck="false" style="width:100%;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:8px;padding:10px;font-family:Consolas,monospace;font-size:13px"
+    placeholder="推荐：直接把密钥扫描的整段输出粘进来（含 [Cipher-FOUND] 那些行，头尾日志行会自动忽略）&#10;  [Cipher-FOUND] message\message_0.db salt=1a2b...(32位salt) -> 4d5e...(64位密钥)&#10;&#10;也支持手写：&#10;message_0.db = 1a2b3c...(64位十六进制密钥)&#10;message/message_1.db: 4d5e6f...&#10;x'7a8b9c...(64位key)d4e5f6...(32位salt)'&#10;9f8e7d...(只写密钥，自动匹配数据库)"></textarea>
   <div style="color:#8b949e;font-size:12px;line-height:1.9;margin-top:10px">
-    <b>支持的写法</b>（每行一条，<code>#</code> 开头为注释）：<br>
+    <b>自动识别格式</b>（每行一条，<code>#</code> 开头为注释）：<br>
+    · <code>[Cipher-FOUND] 路径 salt=&lt;32位&gt; -&gt; &lt;64位&gt;</code> — <b>密钥扫描日志整段粘贴</b>，头尾的
+      <code>[Cipher] …</code> 日志行会被当作噪声忽略，<b>不算错误</b><br>
     · <code>密钥</code> — 64 位十六进制，程序会自动试出它属于哪个数据库<br>
     · <code>数据库名 = 密钥</code> — 明确指定，如 <code>message_0.db = &lt;64位hex&gt;</code>（相对路径如 <code>message/message_0.db</code> 也可以）<br>
     · <code>x'&lt;64位key&gt;&lt;32位salt&gt;'</code> — 微信原始形式（96 位十六进制），按 salt 精确定位<br>
-    · 密钥中间有空格/短横线、带引号、带 <code>0x</code> 前缀都能识别
+    · 密钥中间有空格/短横线、带引号、带 <code>0x</code> 前缀都能识别<br>
+    · <b>打码/脱敏的内容</b>（含 <code>*</code>、<code>…</code>）会被识别并单独提示 ——
+      HMAC 校验需要完整密钥，打码的用不了
   </div>
   <label style="display:flex;align-items:center;gap:6px;margin-top:12px;font-size:12px;color:#8b949e">
     <input type="checkbox" id="cfg-force" style="width:auto">
     强制保存未通过校验的密钥（仅当该行明确写了数据库名时生效，用于数据库文件不在本机等特殊情况）
   </label>
-  <div style="margin-top:14px;display:flex;gap:10px">
+  <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">
     <button class="btn btn-primary" id="btn-save">验证并保存</button>
     <button class="btn" id="btn-verify">仅验证（不保存）</button>
+    <button class="btn" id="btn-export">导出对应关系清单</button>
   </div>
 </div>
 
@@ -94,16 +104,21 @@ function applyDirs(data) {
   if (!dirs.length && data.current) dirs.push({ db_path: data.current, wxid: "", db_count: 0, size_mb: 0 });
   dirs.forEach(function (d) {
     const o = document.createElement("option");
+    const reason = d.reason ? String(d.reason) : "";   // 后端给的逐字文案，前端只显示、不另造一份
     o.value = d.db_path;
-    o.textContent = d.db_path + (d.wxid ? "  (" + d.wxid + ")" : "");
+    o.textContent = (reason ? reason + " · " : "") + d.db_path + (d.wxid ? "  (" + d.wxid + ")" : "");
     sel.appendChild(o);
   });
+  // `current`（配置里记住的目录）始终留在选项里：不在 dirs 里就补一个 option（改造前就有这段）
   if (data.current) {
     let found = false;
     for (const o of sel.options) { if (o.value === data.current) { found = true; break; } }
     if (!found) { const o = document.createElement("option"); o.value = data.current; o.textContent = data.current; sel.appendChild(o); }
-    sel.value = data.current;
   }
+  // 默认选中：推荐项（recommended_path）> 配置里的目录 > 第一条；顺序照后端给的，不重排
+  const recommended = (data.recommended_path || "").trim();
+  const chosen = recommended || data.current || (sel.options[0] ? sel.options[0].value : "");
+  if (chosen) sel.value = chosen;
   return (data.dirs || []).length;
 }
 
@@ -213,9 +228,20 @@ function renderResults(data, saved) {
     body.appendChild(tr);
   });
   const matched = (data.results || []).filter(function (r) { return r.status === "matched" || r.status === "forced"; }).length;
-  el("result-summary").textContent = saved === true
+  let head = saved === true
     ? ("已保存 " + (data.saved || 0) + " 个数据库的密钥；本次 " + matched + " 个密钥校验通过。")
     : ("仅校验未保存：本次 " + matched + " 个密钥校验通过。");
+  const s = data.summary;
+  if (s) {
+    const bits = [];
+    if (s.cipher_log) bits.push("识别到 " + s.cipher_log + " 条密钥扫描日志");
+    if (s.generic) bits.push(s.generic + " 条手写格式");
+    if (s.noise) bits.push(s.noise + " 行日志噪声（已忽略，不算错误）");
+    if (s.masked) bits.push(s.masked + " 行打码/脱敏（无法使用）");
+    if (s.errors) bits.push(s.errors + " 行无法识别");
+    if (bits.length) head += "　—　" + bits.join("；") + "。";
+  }
+  el("result-summary").textContent = head;
   if (saved === true && data.saved > 0) {
     el("next-step").style.display = "block";
     el("next-step-text").innerHTML = "密钥已写入配置，现在可以使用其它功能了：<b>解密数据库</b>（把数据库解密到本地）→ 之后即可用「聊天查看器 / 聊天导出 / 年度报告」等。";
@@ -223,6 +249,53 @@ function renderResults(data, saved) {
     el("next-step").style.display = "none";
   }
   if (data.status) renderStatus(data.status);
+}
+
+function readLogFile(file) {
+  // 优先按 UTF-8 严格解码；失败则按 GBK 再试 —— Windows 控制台重定向出来的日志常是 GBK。
+  const info = el("cfg-file-info");
+  const buf = file.arrayBuffer();
+  const done = function (text, enc) {
+    el("cfg-text").value = text;
+    info.textContent = "已读入 " + file.name + "（" + enc + "，" + text.split("\n").length + " 行）";
+  };
+  buf.then(function (ab) {
+    try {
+      done(new TextDecoder("utf-8", { fatal: true }).decode(ab), "UTF-8");
+      return;
+    } catch (e) { /* 落到 GBK */ }
+    try {
+      done(new TextDecoder("gbk").decode(ab), "GBK");
+      return;
+    } catch (e) { /* 落到兜底 */ }
+    done(new TextDecoder("utf-8").decode(ab), "UTF-8（有替换字符）");
+  }).catch(function (e) { alert("读取文件失败: " + e); });
+}
+
+function exportList() {
+  const text = el("cfg-text").value;
+  if (!text.trim()) { alert("请先粘贴密钥或选择日志文件"); return; }
+  el("btn-export").disabled = true;
+  fetch("/api/keys/export", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ db_dir: currentDir(), text: text }) })
+    .then(function (r) {
+      if (!r.ok) {
+        return r.json().then(function (d) { throw new Error(d.message || d.error || ("HTTP " + r.status)); },
+                             function () { throw new Error("HTTP " + r.status); });
+      }
+      const cd = r.headers.get("Content-Disposition") || "";
+      const m = /filename=([^;]+)/.exec(cd);
+      const name = m ? m[1].trim().replace(/^"|"$/g, "") : "keys_export.txt";
+      return r.blob().then(function (blob) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = name;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
+      });
+    })
+    .catch(function (e) { alert("导出失败: " + (e.message || e)); })
+    .then(function () { el("btn-export").disabled = false; });
 }
 
 function submit(save) {
@@ -250,6 +323,10 @@ el("btn-use-dir").addEventListener("click", useManualDir);
 el("cfg-db-dir").addEventListener("change", function () { loadStatus(); });
 el("btn-save").addEventListener("click", function () { submit(true); });
 el("btn-verify").addEventListener("click", function () { submit(false); });
+el("btn-export").addEventListener("click", exportList);
+el("cfg-file").addEventListener("change", function () {
+  if (this.files && this.files[0]) readLogFile(this.files[0]);
+});
 
 loadDirs().then(loadStatus);
 </script>

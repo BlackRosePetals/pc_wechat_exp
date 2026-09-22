@@ -16,6 +16,10 @@ import sys
 import threading
 import time
 
+# psutil 是可选依赖：护栏本体在 wechat_key_extract（全进程只提示一次）。
+from engine.services.wechat_key_extract import (PsutilUnavailableError,
+                                                require_psutil)
+
 # Polling interval while waiting for Weixin.dll to load (seconds)
 _DLL_POLL_INTERVAL = 0.1
 # Max time to wait for Weixin.dll after process creation (seconds)
@@ -33,6 +37,7 @@ class WeChatStartupWatcher:
         self._running = False
         self._lock = threading.Lock()
         self._captured_keys = []
+        self._psutil_missing_reported = False
 
     def start(self, timeout=300):
         """Block until key captured or timeout.
@@ -45,7 +50,13 @@ class WeChatStartupWatcher:
         print("[Watcher] Subscribing to WMI Win32_ProcessStartTrace...")
 
         # Check if WeChat is already running — hook it now if so
-        existing = self._find_wechat_pids()
+        # （psutil 只是加速项：缺它也要继续用 WMI 事件订阅）
+        existing = []
+        try:
+            existing = self._find_wechat_pids()
+        except PsutilUnavailableError as exc:
+            print(f"[Watcher] {exc}")
+            print("[Watcher] 跳过「已在运行」探测，继续用 WMI 事件订阅")
         if existing:
             for mem_size, pid in existing:
                 print(f"[Watcher] WeChat already running: PID={pid} ({mem_size // 1048576}MB)")
@@ -78,7 +89,12 @@ class WeChatStartupWatcher:
 
     @staticmethod
     def _find_wechat_pids():
-        import psutil
+        """Return [(rss_bytes, pid), ...] sorted by memory desc.
+
+        需要 psutil；缺 psutil 时受控失败（抛 :class:`PsutilUnavailableError`，
+        信息可操作），不再让裸 ``ImportError`` 从线程/CLI 里冒出来。
+        """
+        psutil = require_psutil('枚举 Weixin.exe 进程')
         candidates = []
         for proc in psutil.process_iter(['pid', 'name', 'memory_info']):
             try:
@@ -153,7 +169,11 @@ class WeChatStartupWatcher:
             wmi = locator.ConnectServer(".", "root\\cimv2")
 
             # Track known PIDs to avoid duplicate handling
-            known_pids = set(p for _, p in self._find_wechat_pids())
+            try:
+                known_pids = set(p for _, p in self._find_wechat_pids())
+            except PsutilUnavailableError:
+                # 缺 psutil：WMI 事件本身不需要它，baseline 用空集即可
+                known_pids = set()
 
             # Create event query — this is a WMI-native push subscription
             # that fires when any process starts
@@ -193,7 +213,13 @@ class WeChatStartupWatcher:
 
     def _psutil_poll_loop(self):
         """Fallback: poll via psutil when pywin32/WMI is unavailable."""
-        known_pids = set(p for _, p in self._find_wechat_pids())
+        try:
+            known_pids = set(p for _, p in self._find_wechat_pids())
+        except PsutilUnavailableError as exc:
+            # 这条兜底路完全依赖 psutil：缺它就别空转（提示已由 import_psutil 发过一次）
+            print(f"[Watcher] {exc}")
+            print("[Watcher] psutil 轮询不可用 —— 无法检测微信启动，退出轮询")
+            return
 
         print("[Watcher] psutil polling active (1s interval)")
 
@@ -203,7 +229,13 @@ class WeChatStartupWatcher:
 
     def _psutil_check_new_pids(self, known_pids):
         """Check for new WeChat PIDs via psutil. Thread-safe helper."""
-        current = self._find_wechat_pids()
+        try:
+            current = self._find_wechat_pids()
+        except PsutilUnavailableError:
+            if not self._psutil_missing_reported:
+                self._psutil_missing_reported = True
+                print("[Watcher] psutil 不可用 —— 跳过 psutil 进程检测（WMI 事件订阅仍在工作）")
+            return
         current_pids = set(p for _, p in current)
         new_pids = current_pids - known_pids
         for pid in new_pids:

@@ -6,6 +6,134 @@ const chatHeader = new ChatHeader(document.getElementById('chat-header'));
 const filterBar = new FilterBar(document.getElementById('filter-bar'));
 const groupInfo = new GroupInfo(document.getElementById('group-info-content'));
 
+// ===========================================================================
+// 深链定位（Task 18 / `.docs/agent-context/08-risks/known-issues.md` #29）
+//
+// 搜索结果条目的链接形如
+//     /chat?open=<chat_id>&focus=<local_id>&ft=<create_time>
+// 点进去要**定位到那条消息**，而不是只选中会话。
+//
+// 分工：**页号由后端算**（`/api/messages` 的 `focused.page`，见
+// `engine/services/message/__init__.py::query_messages` 的 focus 支持），前端只做
+// 四件事：① 请求那一页；② 把目标气泡滚动到可见区域；③ 加高亮 class；
+// ④ 没定位到时给**明确提示**（绝不静默地落在会话里）。
+//
+// 为什么定位键必须同时带 `create_time`：`local_id` 在不同分片之间会重号
+// （`msg_meta` 的主键必须含 `create_time`，见 ADR-0012）。只用 `local_id` 会高亮错行。
+// ===========================================================================
+const FOCUS_HIGHLIGHT_CLASS = 'msg-focused';   // 样式在 `css/app.css`
+const FOCUS_NOTICE_ID = 'msg-focus-notice';    // 提示元素（`index.html` 里不存在，由这里建）
+// 未找到时的兜底文案。后端一般会给 `focused.message`，这里只是**兜底**（老服务端/字段缺失）。
+const FOCUS_NOT_FOUND_TEXT = '未能定位到该消息：它可能已被删除，或不属于当前账号';
+// URL 里的定位参数自己不合法（非整数 / 只给一个）时的文案。
+// 前端**不猜**：不把半截参数发给后端（那会拿到 400），也不静默地落回第 1 页。
+const FOCUS_BAD_PARAM_TEXT = '定位参数无效（需要 focus=<local_id>&ft=<create_time> 两个整数），未执行定位';
+
+/** 严格非负整数（与后端 `/api/messages` 的校验同口径）。非整数 → null。 */
+function _focusIntOrNull(raw) {
+  if (raw === null || raw === undefined) return null;
+  const s = String(raw).trim();
+  if (!/^[0-9]+$/.test(s)) return null;
+  const n = parseInt(s, 10);
+  return isFinite(n) ? n : null;
+}
+
+/**
+ * 解析 `?focus=` / `?ft=`（默认取 `window.location.search`）。
+ *
+ * @returns {{focus: ({localId:number,createTime:number}|null), error: (string|null)}}
+ *   `focus` 有值 → 本次加载要定位；`error` 有值 → 参数不合法，要用明确文案提示。
+ */
+function parseFocusParams(search) {
+  const raw = (search === undefined) ? window.location.search : search;
+  let qp;
+  try { qp = new URLSearchParams(raw || ''); } catch (e) { return { focus: null, error: null }; }
+  const rawId = qp.get('focus');
+  const rawTs = qp.get('ft');
+  if (rawId === null && rawTs === null) return { focus: null, error: null };
+  if (rawId === null || rawTs === null) return { focus: null, error: FOCUS_BAD_PARAM_TEXT };
+  const localId = _focusIntOrNull(rawId);
+  const createTime = _focusIntOrNull(rawTs);
+  if (localId === null || createTime === null) return { focus: null, error: FOCUS_BAD_PARAM_TEXT };
+  return { focus: { localId: localId, createTime: createTime }, error: null };
+}
+
+/** 定位提示元素（`#msg-focus-notice`）：存在于列表**上方**，与列表一起滚动不动。 */
+function _focusNoticeEl() {
+  let el = document.getElementById(FOCUS_NOTICE_ID);
+  if (el) return el;
+  const listEl = document.getElementById('message-list');
+  if (!listEl || !document.createElement) return null;
+  el = document.createElement('div');
+  el.id = FOCUS_NOTICE_ID;
+  el.className = 'msg-focus-notice';
+  if (listEl.parentNode && listEl.parentNode.insertBefore) {
+    listEl.parentNode.insertBefore(el, listEl);
+  } else {
+    return null;
+  }
+  return el;
+}
+
+function showFocusNotice(text) {
+  const el = _focusNoticeEl();
+  if (!el) return;
+  el.textContent = text;
+  el.style.display = 'block';
+}
+
+function clearFocusNotice() {
+  const el = document.getElementById(FOCUS_NOTICE_ID);
+  if (!el) return;
+  el.textContent = '';
+  el.style.display = 'none';
+}
+
+/**
+ * 给目标气泡加高亮 class，并返回那一行（没找到 → null）。
+ *
+ * 为什么按**位置**对应而不是按 `create_time` 查 DOM：气泡行上没有时间戳属性
+ * （`message-bubble.js` 不归本任务改）。DOM 里的 `.msg-row` 与 `messages` 数组一一对应，
+ * 所以取"数组里同 id 消息中的第几个"对应的那一行 —— 同页出现重号 `local_id` 时
+ * 也不会高亮错行。
+ */
+function applyFocusHighlight(messages, focus) {
+  const listEl = document.getElementById('message-list');
+  if (!listEl || !focus) return null;
+  const msgs = messages || [];
+  let idx = -1;
+  for (let i = 0; i < msgs.length; i++) {
+    const m = msgs[i];
+    if (m && m.id === focus.localId && m.create_time === focus.createTime) { idx = i; break; }
+  }
+  if (idx < 0) return null;
+  let nth = 0;
+  for (let j = 0; j < idx; j++) {
+    if (msgs[j] && msgs[j].id === focus.localId) nth++;
+  }
+  const rows = [];
+  const kids = listEl.children || [];
+  for (let k = 0; k < kids.length; k++) {
+    const el = kids[k];
+    if (el && el.classList && typeof el.getAttribute === 'function'
+        && el.classList.contains('msg-row')
+        && String(el.getAttribute('data-msg-id')) === String(focus.localId)) {
+      rows.push(el);
+    }
+  }
+  const row = rows[nth] || null;
+  if (!row) return null;
+  row.classList.add(FOCUS_HIGHLIGHT_CLASS);
+  return row;
+}
+
+/** 把目标行滚到可见区域（居中）。老浏览器没有 `scrollIntoView` 时静默跳过。 */
+function scrollFocusedRowIntoView(row) {
+  if (row && typeof row.scrollIntoView === 'function') {
+    row.scrollIntoView({ block: 'center' });
+  }
+}
+
 async function initApp() {
   // Mount all components (event delegation survives re-renders)
   contactList.mount();
@@ -47,6 +175,12 @@ async function initApp() {
   // Show loading and fetch contacts
   contactList.render({ contacts: [], loading: true });
   await loadContacts();
+
+  // 深链定位参数（`?focus=<local_id>&ft=<create_time>`）：只消费**一次**，
+  // 之后的手动翻页/改筛选不再重新定位（见 loadMessages）。
+  const focusParsed = parseFocusParams(window.location.search);
+  Store.data.focus = focusParsed.focus;
+  Store.data.focusError = focusParsed.error;
 
   // Auto-select contact from URL parameter (?contact=NAME)
   const qp = new URLSearchParams(window.location.search);
@@ -142,8 +276,14 @@ async function loadMessages() {
   if (!Store.data.activeChat) return;
   Store.data.loading = true;
   showLoading();
+  // 深链定位**只消费一次**：切页/切会话/改筛选后的请求不再带 focus，
+  // 高亮与提示也就不会粘住（每次 render 都会重建列表 DOM）。
+  const focusReq = Store.data.focus;
+  const focusError = Store.data.focusError;
+  Store.data.focus = null;
+  Store.data.focusError = null;
   try {
-    const data = await api.messages({
+    const params = {
       chat_id: Store.data.activeChat.id,
       page: Store.data.pagination.page,
       per_page: Store.data.pagination.perPage,
@@ -152,18 +292,44 @@ async function loadMessages() {
       type: Store.data.filters.msgTypes || undefined,
       sender: Store.data.filters.sender || undefined,
       keyword: Store.data.filters.keyword || undefined,
-    });
+    };
+    if (focusReq) {
+      // 后端据此返回**包含该消息的那一页**并忽略 page
+      params.focus_local_id = focusReq.localId;
+      params.focus_create_time = focusReq.createTime;
+    }
+    // `/api/messages` 的 URL 组装**只有 `api.js::messages()` 一处**（Task 19 收掉了
+    // Task 18 在这里复制的那份：当时 `api.js` 的参数白名单里没有 `focus_*`，
+    // 只能绕开它自己拼 URL）。取消语义（`cancelPending()`）也照旧由它负责。
+    const data = await api.messages(params);
     if (data.error) throw new Error(data.error);
     Store.data.messages = data.messages;
     Store.data.pagination = data.pagination;
     Store.data.expandedMsg = null;
     messageList.render({ messages: Store.data.messages, expandedMsg: Store.data.expandedMsg });
     pagination.render(Store.data.pagination);
-    document.getElementById('message-list').scrollTop = 0;
+    clearFocusNotice();
+    let focusedRow = null;
+    if (focusReq && data.focused && data.focused.found) {
+      focusedRow = applyFocusHighlight(Store.data.messages, focusReq);
+    }
+    if (focusedRow) {
+      scrollFocusedRowIntoView(focusedRow);
+    } else {
+      document.getElementById('message-list').scrollTop = 0;
+    }
+    // 「没定位到」的任何一种形态都必须说清楚：参数非法 / 消息不在（后端 reason）
+    // / 后端说 found 但页里没有那一行（契约不一致）。绝不静默。
+    if (focusReq && !focusedRow) {
+      showFocusNotice((data.focused && data.focused.message) || FOCUS_NOT_FOUND_TEXT);
+    } else if (focusError) {
+      showFocusNotice(focusError);
+    }
     const rc = document.querySelector('#filter-bar .filter-result-count');
     if (rc) rc.textContent = `找到 ${data.pagination.total.toLocaleString()} 条`;
   } catch (e) {
     if (e.name !== 'AbortError') {
+      clearFocusNotice();
       showError('加载消息失败: ' + e.message);
       const rc = document.querySelector('#filter-bar .filter-result-count');
       if (rc) rc.textContent = '';

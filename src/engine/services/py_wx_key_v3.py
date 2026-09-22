@@ -36,6 +36,10 @@ import time
 
 from keystone import Ks, KS_ARCH_X86, KS_MODE_64
 
+# psutil 是可选依赖（代码不许假设它存在）：护栏本体在 wechat_key_extract，全进程只提示一次。
+from engine.services.wechat_key_extract import (PsutilUnavailableError,
+                                                require_psutil)
+
 # --- Constants ---
 PROCESS_VM_READ = 0x0010
 PROCESS_VM_WRITE = 0x0020
@@ -109,8 +113,12 @@ def _err(msg):
 
 
 def _find_weixin_pid():
-    """Return (pid, mem_mb) of largest weixin.exe process."""
-    import psutil
+    """Return (pid, mem_mb) of largest weixin.exe process.
+
+    需要 psutil（可选依赖）：缺它时抛 :class:`PsutilUnavailableError`，
+    而不是让裸 ``ImportError`` 冒出去，也不要把失败说成「微信没运行」。
+    """
+    psutil = require_psutil('自动探测 Weixin.exe 进程')
     candidates = []
     for proc in psutil.process_iter(['pid', 'name', 'memory_info']):
         try:
@@ -491,7 +499,12 @@ def initialize_hook(pid=None, timeout=30):
             return False
 
         if pid is None:
-            pid, mem_mb = _find_weixin_pid()
+            try:
+                pid, mem_mb = _find_weixin_pid()
+            except PsutilUnavailableError as exc:
+                # 受控失败：把「依赖缺失」的真实原因留在 last_error 里，
+                # 不要被下面那句 "Weixin.exe not running" 顶掉。
+                return _err(str(exc))
             if not pid:
                 return _err("Weixin.exe not running")
 

@@ -61,14 +61,37 @@
   </div>
 </div>
 
+<div class="config-panel" style="margin-top:16px" id="dbdir-panel">
+  <h3 style="margin:0 0 12px 0;font-size:15px;color:#eee">微信数据目录</h3>
+  <div class="form-row">
+    <div style="flex:2"><label>微信数据目录 (db_storage)</label><input id="cfg-db-dir" placeholder="例如: D:\xwechat_files\wxid_xxx\db_storage"></div>
+  </div>
+  <div style="margin-top:8px">
+    <button id="btn-deep" class="btn btn-secondary" style="font-size:11px">🔍 深度搜索</button>
+    <button id="btn-use-dir" class="btn btn-secondary" style="font-size:11px">使用该目录</button>
+  </div>
+  <div class="form-row" style="margin-top:8px">
+    <div style="flex:4"><label>检测到的数据目录（选择即填入上面的输入框）</label>
+      <select id="cfg-db-dir-list" style="width:100%;padding:8px 10px;border:1px solid #30363d;border-radius:6px;background:#0d1117;color:#c9d1d9;font-size:13px"></select></div>
+  </div>
+  <div id="dir-hint" style="color:#8b949e;font-size:12px;margin-top:8px;line-height:1.8">
+    💡 找不到数据目录时点「🔍 深度搜索」（最长 45 秒）；也可以在微信「设置 → 文件管理 → 打开文件夹」里查看，
+    把 <code>xwechat_files\&lt;账号&gt;\db_storage</code> 粘贴到输入框后点「使用该目录」。</div>
+</div>
+
 <div style="margin-top:18px;display:flex;align-items:center;gap:12px">
   <button class="btn btn-primary" id="btn-save">保存设置</button>
   <span id="save-msg" style="font-size:12px;color:#3fb950"></span>
 </div>
 {% endblock %}
 {% block scripts %}
+<script src="{{ url_for('static', filename='js/dbdir.js') }}"></script>
 <script>
 function el(id) { return document.getElementById(id); }
+
+// 数据目录选择器（备份 / 解密 / 密钥 / 设置 共用同一份 dbdir.js）。
+// 「使用该目录」会 POST /api/keys/dbdir 把目录写进统一配置 —— 不是塞进 ASR 设置里。
+const dirPicker = new DbDirPicker({ inputId: 'cfg-db-dir' });
 
 var AVAILABLE = [];
 

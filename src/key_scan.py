@@ -310,11 +310,22 @@ def _extract_keys_from_mmkv(db_dir, db_files, salt_to_dbs, print_fn):
     return key_map
 
 
-def _find_wechat_pids():
-    """Return list of (rss_bytes, pid) for weixin.exe, sorted by memory desc."""
-    try:
-        import psutil
-    except ImportError:
+def _find_wechat_pids(errors=None, print_fn=None):
+    """Return list of (rss_bytes, pid) for weixin.exe, sorted by memory desc.
+
+    psutil 是**可选**依赖（打包链自 Task 24 起已包含它，但代码不许假设它存在）。
+    缺 psutil 时返回 ``[]``，并把原因 append 到 ``errors``（如果给了）——调用方才能
+    区分「检测工具不可用」和「微信没运行」。不传 ``errors``/``print_fn`` 时行为与
+    加护栏前一致（调用方兼容）。
+
+    护栏本体与提示语放在 `engine.services.wechat_key_extract`（全进程只提示一次）。
+    """
+    from engine.services.wechat_key_extract import (PSUTIL_UNAVAILABLE_REASON,
+                                                    import_psutil)
+    psutil = import_psutil(print_fn)
+    if psutil is None:
+        if errors is not None:
+            errors.append(PSUTIL_UNAVAILABLE_REASON)
         return []
     candidates = []
     for proc in psutil.process_iter(['pid', 'name', 'memory_info']):
@@ -495,7 +506,8 @@ def _extract_keys_via_hook(db_dir, db_files, salt_to_dbs, key_map, print_fn, tim
     import time as _time
 
     # --- Phase 1: Try hooking currently running WeChat ---
-    candidates = _find_wechat_pids()
+    pid_errors = []
+    candidates = _find_wechat_pids(errors=pid_errors, print_fn=print_fn)
     if candidates:
         print_fn(f"[Hook] Weixin.exe PIDs found: {[p for _,p in candidates]}")
         for mem_size, pid in candidates:
@@ -505,6 +517,14 @@ def _extract_keys_via_hook(db_dir, db_files, salt_to_dbs, key_map, print_fn, tim
                 return
         print_fn("[Hook] No keys captured from running WeChat.")
         print_fn("[Hook] This is expected if WeChat opened all DBs before hook was installed.")
+    elif pid_errors:
+        # 枚举不到进程的**真实原因**要说出来，不能一律说成「微信没运行」。
+        # 也不能继续走 Phase 2：那个阶段每秒重新枚举一次，缺 psutil 时永远为空，
+        # 只能空等 120s 再让用户看一句「超时」。
+        for reason in pid_errors:
+            print_fn(f"[Hook] 无法枚举微信进程：{reason}")
+        print_fn("[Hook] 跳过 Hook 兜底（不影响 Config.Cipher 只读提取）")
+        return
     else:
         print_fn("[Hook] WeChat is not running.")
 

@@ -551,3 +551,49 @@ def get_msg_table(conn, username):
     return tname if row else None
 
 
+# ---------------------------------------------------------------------------
+# wxid 值形式：账号**目录名** ↔ **裸 wxid**（Critical #17 / known-issues #20）
+# ---------------------------------------------------------------------------
+
+_WXID_DIR_SUFFIX_LEN = 4
+_HEX_DIGITS = "0123456789abcdefABCDEF"
+
+
+def bare_wxid(value):
+    """账号**目录名** → 消息侧使用的**裸 wxid**（Critical #17 / known-issues #20）。
+
+    同一个账号在不同的地方存成两种形式：
+
+    * **账号目录名**（`config_file.get_backup_wxid()` / `app.config['WXID']` /
+      `_detect_wxid()`）形如 `<裸 wxid>_<4 位十六进制>`，真实值 24 字符；
+    * **裸 wxid**（消息侧：分片 `Name2Id.user_name`、`chats.db.chats.chat_id`、
+      `msg_meta.sender_username`）19 字符。
+
+    于是任何"配置里的这个值 == 消息侧的那个值"的比较**永远不成立** —— 搜索侧
+    （`发送者:我` 恒返回 0，Critical #17）与会话列表侧（本人会话泄漏进列表，
+    known-issues #20）踩的是同一个坑。修法只有一条：比较前把两种形式都接受。
+
+    判据（严格，**宁可不动也不乱截**）：按 `_` 切分后**≥3 段**、且**最后一段长度为 4
+    且全为十六进制字符**（大小写均可）→ 去掉最后一段；其余情况（**已经是裸 wxid**、
+    空值、`None`、尾段长度不对或不是十六进制）**原样返回**（`None` → `''`）。
+    **幂等**：`bare_wxid(bare_wxid(x)) == bare_wxid(x)`。
+
+    ⚠️ 调用方**不要只用返回值**：配置里到底存哪种形式无法保证，多带一个不存在的值
+    在集合/`IN` 比较里是无害的，所以调用方通常**同时接受**原值与返回值
+    （见 `search._resolve_scope` 与 `chat._own_wxid_forms`）。
+
+    ⚠️ 命名是**自证式**的：它只回答"裸 wxid 长什么样"，不做任何猜测性规范化 ——
+    不要改名成 `normalize*`（那会暗示它可以顺手 strip/小写/补前缀）。
+    语义与 `engine.services.search._bare_wxid()` 必须逐字一致，由
+    `tests/test_bare_wxid.py::test_utils_bare_wxid_matches_search_bare_wxid` 锁住。
+    """
+    text = (value or '').strip()
+    parts = text.split('_')
+    if len(parts) < 3:
+        return text
+    tail = parts[-1]
+    if len(tail) == _WXID_DIR_SUFFIX_LEN and all(c in _HEX_DIGITS for c in tail):
+        return '_'.join(parts[:-1])
+    return text
+
+

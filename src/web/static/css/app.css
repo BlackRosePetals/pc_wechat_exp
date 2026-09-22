@@ -68,7 +68,40 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft Ya
 .msg-time { color: #484f58; font-family: monospace; font-size: 10px; }
 .msg-num { color: #484f58; font-family: monospace; font-size: 10px; min-width: 24px; }
 
-.msg-text { padding: 4px 12px 8px; font-size: 13px; color: #c9d1d9; line-height: 1.5; word-break: break-word; }
+/* ---------------------------------------------------------------------------
+   深链定位（Task 18 / known-issues #29）：从搜索结果点进来时高亮目标消息。
+   `msg-focused` 由 `app.js` 在渲染后加到目标 `.msg-row` 上（只在那一页生效，
+   下次 render 重建列表就自然消失 —— 不粘死）。
+   --------------------------------------------------------------------------- */
+.msg-row.msg-focused .msg-bubble {
+  background: rgba(230, 162, 60, 0.14);
+  border: 1px solid #e6a23c;
+  box-shadow: 0 0 0 2px rgba(230, 162, 60, 0.35);
+}
+.msg-row.msg-focused .msg-bubble::before {
+  content: '定位到此';
+  display: block;
+  padding: 3px 12px 0;
+  font-size: 10px;
+  color: #e6a23c;
+}
+/* 定位失败/参数非法时的提示条：默认隐藏，`app.js` 需要时才 display:block。 */
+.msg-focus-notice {
+  display: none;
+  margin: 8px 20px 0;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: #e6a23c;
+  background: rgba(230, 162, 60, 0.08);
+  border: 1px solid rgba(230, 162, 60, 0.35);
+}
+
+/* 正文换行：CSS 默认 white-space:normal 会把正文里的换行折叠成空格，多行消息被压成一行。
+   电脑版微信是多行显示的，这里必须显式 pre-wrap；word-break 保留，保证
+   URL / 无空格长串仍能折行、不撑破气泡宽度。 */
+.msg-text { padding: 4px 12px 8px; font-size: 13px; color: #c9d1d9; line-height: 1.5; word-break: break-word; white-space: pre-wrap; }
 
 .msg-type-tag { padding: 1px 6px; border-radius: 3px; font-size: 10px; margin-right: 4px; white-space: nowrap; }
 .msg-type-tag.image { background: rgba(255,138,101,0.13); color: #ff8a65; }
@@ -443,6 +476,76 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft Ya
   display: flex;
   border-bottom: 1px solid #30363d;
 }
+.contacts-export-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #30363d;
+  background: #10151c;
+}
+.contacts-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #30363d;
+  background: #10151c;
+}
+.contacts-filter-bar label {
+  flex-shrink: 0;
+  color: #8b949e;
+  font-size: 11px;
+}
+.contacts-filter-bar select {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  background: #0d1117;
+  color: #c9d1d9;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  font-size: 12px;
+  outline: none;
+}
+.label-chip {
+  display: inline-block;
+  padding: 1px 6px;
+  margin: 0 4px 2px 0;
+  background: #1f6feb22;
+  color: #79c0ff;
+  border: 1px solid #1f6feb66;
+  border-radius: 10px;
+  font-size: 10px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+.addr-item-labels {
+  margin-top: 3px;
+  display: flex;
+  flex-wrap: wrap;
+}
+.contacts-export-bar label {
+  flex-shrink: 0;
+  color: #8b949e;
+  font-size: 11px;
+}
+.contacts-export-bar select {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  background: #0d1117;
+  color: #c9d1d9;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  font-size: 12px;
+  outline: none;
+}
+.contacts-export-bar .btn {
+  flex-shrink: 0;
+  padding: 4px 12px;
+  font-size: 12px;
+}
 .contacts-tab {
   flex: 1;
   padding: 10px 0;
@@ -705,3 +808,93 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft Ya
 .hook-step-arrow { color: #30363d; font-size: 12px; }
 #hook-instruction { background: #1a1a2e; border: 1px solid #30363d; border-radius: 8px; padding: 16px; font-size: 14px; color: #e6edf3; line-height: 1.6; min-height: 48px; }
 #hook-instruction strong { color: #e6edf3; }
+
+/* ==========================================================================
+   全局搜索页（Task 9 Phase 2）
+   结构见 templates/search.html，逻辑见 static/js/search-app.js。
+   这里只负责"可用"：结果列表、摘要行数上限、<mark> 高亮、索引状态条。
+   ========================================================================== */
+
+/* ---------- 搜索表单 ---------- */
+#search-type { min-height: 62px; }
+#search-type option { padding: 1px 4px; }
+#search-help { white-space: pre; overflow-x: auto; line-height: 1.7; margin: 8px 0 0 0; }
+
+/* ---------- 索引状态条 ---------- */
+#search-index-bar {
+  margin: 12px 0;
+  padding: 10px 12px;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+}
+#search-index-bar .progress-detail { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#search-build-progress { margin-top: 8px; }
+#search-build-progress .progress-detail { display: block; font-size: 12px; color: #8b949e; margin-top: 6px; }
+.search-bar-alert {
+  color: #e6a23c;
+  font-size: 12px;
+  line-height: 1.7;
+  background: rgba(230, 162, 60, 0.08);
+  border: 1px solid rgba(230, 162, 60, 0.35);
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin-bottom: 8px;
+}
+/* 构建失败：红边 + 重试按钮，绝不残留"看起来正常的绿色状态"（T9-A1） */
+.search-bar-failed { border-left: 3px solid #e94560; padding-left: 10px; }
+.search-bar-failed .progress-detail { color: #f0a0ab; }
+
+/* ---------- 结果区 ---------- */
+.search-notes {
+  border: 1px solid rgba(230, 162, 60, 0.35);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  background: rgba(230, 162, 60, 0.06);
+}
+.search-note { color: #e6a23c; font-size: 12px; line-height: 1.7; }
+.search-summary { color: #8b949e; font-size: 12px; margin-bottom: 8px; }
+.search-slow-hint { margin-top: 8px; font-size: 12px; color: #8b949e; }
+/* "0 条"但索引不可信时的提示：与"确实没有这条消息"在视觉上必须能区分（T9-A1） */
+.search-empty-warn {
+  text-align: center;
+  padding: 32px 20px;
+  color: #e6a23c;
+  font-size: 13px;
+  line-height: 1.8;
+  background: rgba(230, 162, 60, 0.06);
+  border: 1px solid rgba(230, 162, 60, 0.35);
+  border-radius: 8px;
+}
+.search-empty-note { margin-top: 6px; font-size: 12px; color: #8b949e; }
+
+.search-result-list { display: flex; flex-direction: column; gap: 8px; }
+.search-result {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.search-result:hover { border-color: #1f6feb; }
+.sr-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+.sr-chat { color: #e6edf3; font-weight: 600; font-size: 13px; }
+.sr-sender { color: #8b949e; font-size: 12px; }
+.sr-time { color: #8b949e; font-size: 12px; margin-left: auto; }
+.sr-group { background: rgba(31, 111, 235, 0.13); color: #58a6ff; }
+
+/* 摘要最多 3 行：命中的长消息不把结果列表撑爆（点开仍是完整内容） */
+.sr-snippet {
+  color: #c9d1d9;
+  font-size: 13px;
+  line-height: 1.6;
+  word-break: break-all;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  line-clamp: 3;
+  overflow: hidden;
+}
+.sr-snippet mark { background: #9e6a03; color: #fff; border-radius: 2px; padding: 0 1px; }
+.sr-actions { margin-top: 8px; }
+.sr-actions .btn { font-size: 12px; padding: 3px 10px; }

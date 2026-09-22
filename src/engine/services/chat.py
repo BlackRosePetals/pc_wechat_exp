@@ -14,9 +14,24 @@ import sqlite3
 
 from engine.services.name_resolver import pick_display_name, resolve_wxid, _load_chatroom_names, chatroom_fallback_name
 from engine.services.message.decode import decompress_content
+from engine.utils import bare_wxid
 
 # Max characters for auto-generated group name before truncation
 _GROUP_NAME_MAX_LEN = 32
+
+
+def _own_wxid_forms(wxid):
+    """本人 wxid 的**两种可接受形式**的集合（known-issues #20）。
+
+    调用方传进来的值来自 `app.config['WXID']` ← `_detect_wxid()`，实测是**账号目录名**
+    （24 字符，形如 `<裸 wxid>_10e8`）；而这里的 `Name2Id.user_name` / `chats.db.chat_id`
+    存的是**裸 wxid**（19 字符）。只用一种形式比较 → **永不相等** → 本人会话泄漏。
+    所以两种形式都接受：集合里多一个不存在的值是无害的，而配置里存的是哪种形式
+    我们无法保证（与 `search._resolve_scope` 的裁决一致）。
+
+    空值（`None` / `''`）被丢掉 → 返回**空集** → 调用方不排除任何会话，与旧行为一致。
+    """
+    return {form for form in (wxid, bare_wxid(wxid)) if form}
 
 
 def get_contacts(decrypted_dir: str, wxid: str = None) -> list:
@@ -70,6 +85,7 @@ def get_contacts(decrypted_dir: str, wxid: str = None) -> list:
     chatroom_names = _load_chatroom_names(decrypted_dir)
 
     contacts = {}
+    own_forms = _own_wxid_forms(wxid)
     for idx, db_path in msg_dbs:
         try:
             conn = sqlite3.connect(db_path)
@@ -81,7 +97,7 @@ def get_contacts(decrypted_dir: str, wxid: str = None) -> list:
                 uname = hash_to_name.get(h)
                 if not uname:
                     uname = f"unknown_{h[:8]}"
-                if wxid and uname == wxid:
+                if uname in own_forms:
                     continue
 
                 count_row = conn.execute(
@@ -187,8 +203,9 @@ def _load_from_chats_db(decrypted_dir: str, wxid: str = None) -> list:
         if not rows:
             return None
         contacts = []
+        own_forms = _own_wxid_forms(wxid)
         for chat_id, display_name, msg_count, last_time, is_group in rows:
-            if wxid and chat_id == wxid:
+            if chat_id in own_forms:
                 continue
             contacts.append({
                 'id': chat_id,

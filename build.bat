@@ -81,7 +81,10 @@ if %errorlevel% neq 0 (
     --hidden-import jieba ^
     --hidden-import jieba.posseg ^
     --hidden-import requests ^
+    --hidden-import zhconv ^
+    --collect-all zhconv ^
     --hidden-import pypinyin ^
+    --hidden-import psutil ^
     --collect-all jieba ^
     --exclude-module pytest ^
     --exclude-module _pytest ^

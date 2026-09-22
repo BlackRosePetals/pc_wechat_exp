@@ -41,8 +41,25 @@ class TestRowToMessageBasic:
                               chat_id='room@chatroom')
         assert msg['is_sender'] is False
         assert msg['sender_name'] == 'sender_wxid'
-        # content retains original (sender prefix preserved in raw content)
-        assert msg['content'] == content
+        # 展示用 content 必须剥掉 "sender_wxid:\n" 前缀：发送者已经由 sender_name
+        # 单独呈现，正文里再留一份 wxid 是重复且泄漏身份的（且换行渲染开启后它会独占一行）。
+        assert msg['content'] == 'actual group message'
+        # 原始字符串仍保留在 content_raw 里，便于需要原样的消费方取用
+        assert msg['content_raw'] == content
+
+    def test_group_text_body_newline_is_preserved(self):
+        """正文内部的换行必须原样保留（Web UI 用 white-space:pre-wrap 渲染）。"""
+        content = 'sender_wxid:\n第一行\n第二行\n\n第四行'
+        msg = _row_to_message(_make_row(content=content, origin=0),
+                              chat_id='room@chatroom')
+        assert msg['content'] == '第一行\n第二行\n\n第四行'
+        assert msg['content'].count('\n') == 3
+
+    def test_direct_text_newline_is_preserved(self):
+        """一对一聊天无前缀，换行同样必须保留。"""
+        msg = _row_to_message(_make_row(content='第一行\n第二行', origin=0),
+                              chat_id='wxid_abc')
+        assert msg['content'] == '第一行\n第二行'
 
     def test_image_type(self):
         msg = _row_to_message(_make_row(ltype=3, content=''),

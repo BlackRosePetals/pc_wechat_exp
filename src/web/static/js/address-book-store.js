@@ -8,6 +8,8 @@ const AddressBookStore = {
     activeTab: 'contacts',     // 'contacts' | 'groups'
     activeContact: null,       // currently selected contact object or null
     searchQuery: '',
+    labelFilter: '',           // 微信标签名，'' = 不筛选
+    availableLabels: [],       // 供下拉框使用
     loading: true,
     error: null,
     page: 1,
@@ -41,16 +43,21 @@ const AddressBookStore = {
   },
 
   // Return contacts filtered by current search query
-  // Contacts tab: server already filters, skip client-side re-filtering
+  // Contacts tab: server already filters (q / label), skip client-side re-filtering
   // Groups tab: client-side filtering (server doesn't filter groups)
   filteredContacts() {
     const source = this.data.activeTab === 'groups'
       ? this.data.groups
       : this.data.contacts.filter(c => !c.is_group);
     if (this.data.activeTab === 'contacts') return source;
+    let out = source;
+    const label = (this.data.labelFilter || '').toLowerCase();
+    if (label) {
+      out = out.filter(c => (c.labels || []).some(n => (n || '').toLowerCase() === label));
+    }
     const q = this.data.searchQuery.toLowerCase();
-    if (!q) return source;
-    return source.filter(c =>
+    if (!q) return out;
+    return out.filter(c =>
       (c.display_name || '').toLowerCase().includes(q) ||
       (c.remark || '').toLowerCase().includes(q) ||
       (c.nick_name || '').toLowerCase().includes(q) ||

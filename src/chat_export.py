@@ -454,8 +454,12 @@ def _format_content(content, base_type, is_group):
 
 
 def export_all_contacts(decrypted_dir, out_dir, start_ts=None, end_ts=None,
-                        keyword=None, name_filter=None, print_fn=None, progress_fn=None):
+                        keyword=None, name_filter=None, print_fn=None,
+                        progress_fn=None, fmt='txt'):
     """导出所有匹配联系人的聊天记录。
+    Args:
+        name_filter: 只导出显示名/用户名包含该关键词的会话
+        fmt: 单会话格式，透传给 export_chat（'txt' 或 'html'）
     Returns: [(name, msg_count, file_path), ...]
     """
     from chat_list import scan_chats
@@ -476,11 +480,11 @@ def export_all_contacts(decrypted_dir, out_dir, start_ts=None, end_ts=None,
             if kw not in c["display_name"].lower() and kw not in c["username"].lower():
                 continue
 
-        pct = int((i + 1) / total * 100)
+        pct = int((i + 1) / total * 100) if total else 100
         progress_fn(pct, f"导出: {c['display_name']}")
 
         count, path = export_chat(c, out_dir, start_ts, end_ts, keyword,
-                                  print_fn=print_fn)
+                                  print_fn=print_fn, fmt=fmt)
         if count > 0:
             results.append((c["display_name"], count, path))
             print_fn(f"  {c['display_name']}: {count} 条消息 -> {os.path.basename(path)}")

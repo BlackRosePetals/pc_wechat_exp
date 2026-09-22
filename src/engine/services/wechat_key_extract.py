@@ -308,14 +308,72 @@ def extract_keys_from_mmkv(db_dir, db_files, salt_to_dbs, key_map, print_fn):
 
 
 # ---------------------------------------------------------------------------
+#  psutil 护栏（psutil 是**可选**依赖）
+#
+#  打包链自 Task 24 起已包含 psutil，但**代码不许假设它存在**：开发环境可能没装、
+#  旧 exe 或精简安装可能没有。因此每一处使用都必须
+#  ① 显式降级——一次性 WARNING，绝不静默；② 不许把「依赖缺失」说成「微信没运行」。
+#  主路径（一键提取 = load_from_config → Config.Cipher 只读扫描）不用 psutil。
+# ---------------------------------------------------------------------------
+PSUTIL_UNAVAILABLE_REASON = 'psutil 不可用（当前环境无法导入它：未安装，或该构建未包含该依赖）'
+_PSUTIL_MAIN_PATH_HINT = '一键提取主路径（Config.Cipher 只读扫描）不受影响'
+
+_psutil_warning_emitted = False
+
+
+def import_psutil(print_fn=None):
+    """返回 psutil 模块；无法导入时返回 None。
+
+    缺 psutil **绝不静默**：第一次失败提示一条 WARNING，之后不再重复（轮询/循环里
+    不会刷屏）。拿到 None 的调用方必须把原因带出去（:data:`PSUTIL_UNAVAILABLE_REASON`）
+    或受控失败——返回空结果又不说明原因，正是「psutil 缺失」被误报成「微信没运行」的根源。
+    """
+    global _psutil_warning_emitted
+    try:
+        import psutil
+    except ImportError as exc:
+        if not _psutil_warning_emitted:
+            _psutil_warning_emitted = True
+            emit = print if print_fn is None else print_fn
+            emit('[WARN] %s — %s（%s）'
+                 % (PSUTIL_UNAVAILABLE_REASON, _PSUTIL_MAIN_PATH_HINT, exc))
+        return None
+    return psutil
+
+
+class PsutilUnavailableError(RuntimeError):
+    """需要 psutil 但没有（运行环境未安装，或该构建未包含该依赖）。"""
+
+
+def require_psutil(feature, print_fn=None):
+    """返回 psutil；不可用时抛 :class:`PsutilUnavailableError`（信息可操作）。
+
+    用于「静默返回空 = 静默失效」的场合（等待 DLL、自动探测 PID 等）：这些位置
+    必须受控失败，不能让裸 ``ImportError`` 冒到 SSE/CLI 之外变成看不懂的堆栈。
+    """
+    psutil = import_psutil(print_fn)
+    if psutil is None:
+        raise PsutilUnavailableError(
+            '%s需要 psutil，但当前环境无法导入该模块（未安装，或该构建未包含）。%s。'
+            % (feature, _PSUTIL_MAIN_PATH_HINT))
+    return psutil
+
+
+# ---------------------------------------------------------------------------
 #  Strategy 3+4: API hook (py_wx_key_v2 shellcode injection)
 # ---------------------------------------------------------------------------
 
-def _find_wechat_pids():
-    """Return list of (rss_bytes, pid) for weixin.exe, sorted by memory desc."""
-    try:
-        import psutil
-    except ImportError:
+def _find_wechat_pids(errors=None, print_fn=None):
+    """Return list of (rss_bytes, pid) for weixin.exe, sorted by memory desc.
+
+    psutil 是可选依赖：不可用时返回 ``[]``，并把原因 append 到 ``errors``（如果给了），
+    调用方才能把「没有 psutil」和「微信没运行」分开。不传 ``errors``/``print_fn``
+    时行为与加护栏前一致（调用方兼容）。
+    """
+    psutil = import_psutil(print_fn)
+    if psutil is None:
+        if errors is not None:
+            errors.append(PSUTIL_UNAVAILABLE_REASON)
         return []
     candidates = []
     for proc in psutil.process_iter(['pid', 'name', 'memory_info']):
@@ -585,8 +643,12 @@ def _dll_loaded_fast(pid):
 
 
 def _wait_dll_loaded(pid, timeout=30):
-    """Wait until Weixin.dll is loaded in the given PID. Returns True/False."""
-    import psutil
+    """Wait until Weixin.dll is loaded in the given PID. Returns True/False.
+
+    需要 psutil 的 ``memory_maps()``；缺 psutil 时**受控失败**（抛
+    :class:`PsutilUnavailableError`），而不是让裸 ``ImportError`` 冒到调用方之外。
+    """
+    psutil = require_psutil('等待 Weixin.dll 装载')
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
@@ -660,9 +722,15 @@ class _ProcessStartWatcher:
             pythoncom.CoUninitialize()
 
     def _poll_loop(self):
+        errors = []
         while self._running:
-            for _, pid in _find_wechat_pids():
+            errors.clear()
+            for _, pid in _find_wechat_pids(errors=errors):
                 self._report(pid)
+            if errors:
+                # 例如 psutil 不可用 —— 轮询不可能有结果（原因已由 import_psutil 提示过一次，
+                # 不在 0.3s 循环里重复打印），直接结束线程，不空转 300s。
+                return
             time.sleep(0.3)
 
 
@@ -683,7 +751,8 @@ def extract_keys_via_hook(db_dir, db_files, salt_to_dbs, key_map, print_fn, time
         return 0
 
     # --- Phase 1: Try hooking currently running WeChat ---
-    candidates = _find_wechat_pids()
+    pid_errors = []
+    candidates = _find_wechat_pids(errors=pid_errors, print_fn=print_fn)
     if candidates:
         print_fn(f"[Hook] Weixin.exe PIDs: {[p for _, p in candidates]}")
         for mem_size, pid in candidates:
@@ -692,6 +761,11 @@ def extract_keys_via_hook(db_dir, db_files, salt_to_dbs, key_map, print_fn, time
             if found > 0:
                 return found
         print_fn("[Hook] No keys captured from running WeChat (DBs already open).")
+    elif pid_errors:
+        # 枚举不到进程的**真实原因**要说出来，不能一律说成「微信没运行」
+        for reason in pid_errors:
+            print_fn(f"[Hook] 无法枚举微信进程：{reason}")
+        print_fn("[Hook] 仍会等待新进程上报（WMI 事件订阅）——请确认微信已启动")
     else:
         print_fn("[Hook] WeChat is not running.")
 
@@ -764,9 +838,15 @@ def extract_keys_via_memory_scan(db_dir, db_files, salt_to_dbs, key_map, print_f
 
     hex_re = re.compile(b"x'([0-9a-fA-F]{64,192})'")
 
+    pid_errors = []
     try:
-        pids = _find_wechat_pids()
+        pids = _find_wechat_pids(errors=pid_errors, print_fn=print_fn)
     except Exception:
+        return 0
+    if pid_errors:
+        # 没有可枚举的进程（例如缺 psutil）：说清原因再退，不要静默返回 0
+        for reason in pid_errors:
+            print_fn(f"[MemScan] 无法枚举微信进程：{reason}")
         return 0
 
     found_total = 0

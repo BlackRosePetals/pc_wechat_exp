@@ -5,17 +5,47 @@
   POST /api/keys/verify   解析并实测匹配（不保存）
   POST /api/keys/save     匹配并保存（可选强制保存未通过校验的）
   POST /api/keys/remove   删除某个数据库已保存的密钥
+  POST /api/keys/export   把解析出的 (数据库, 密钥) 对应关系导出为可回读的清单文件
+
+verify / save / export 三者都接受两种输入：
+  · JSON  body 的 `text` 字段（粘贴）
+  · multipart 上传的 `file` 字段（日志文件，utf-8 失败时按 gbk 再试）
+两种输入都走同一套自动格式识别（见 engine/manual_keys.parse_entries）。
 """
 import os
 import sys
+from datetime import datetime
 
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, current_app, jsonify, make_response, request
 
 _BASE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _BASE not in sys.path:
     sys.path.insert(0, _BASE)
 
 keys_bp = Blueprint("keys_api", __name__, url_prefix="/api/keys")
+
+
+def _decode_upload(raw):
+    """按候选编码解码上传内容（复用 engine 层实现，避免编码知识两处维护）。"""
+    from engine.manual_keys import decode_text_bytes
+    return decode_text_bytes(raw)
+
+
+def _read_pasted_text():
+    """从请求中取出用户粘贴/上传的密钥文本。文件优先于 text 字段。"""
+    uploaded = request.files.get("file")
+    if uploaded is not None and uploaded.filename is not None:
+        raw = uploaded.read()
+        if raw:
+            return _decode_upload(raw), os.path.basename(uploaded.filename)
+    data = request.get_json(silent=True) or {}
+    return (data.get("text") or ""), ""
+
+
+def _input_db_dir(data=None):
+    if data is None:
+        data = request.get_json(silent=True) or {}
+    return _resolve_db_dir(data.get("db_dir") or request.form.get("db_dir"))
 
 
 def _dir_hint():
@@ -65,13 +95,55 @@ def _resolve_db_dir(param=None):
     return param or ""
 
 
+def _config_db_dir():
+    """配置里记住的 db_storage（用户上次选过的目录）——`tier=config` 的判据。"""
+    try:
+        from engine.config_file import get_db_dir
+        return get_db_dir() or None
+    except Exception:
+        return None
+
+
+def _degraded_rank(dirs, message):
+    """排序/探针失败时的降级：字段照给（全 idle）+ 原因照记，绝不 500、绝不空列表。"""
+    try:
+        from engine.services.active_dir import apply_idle_defaults, degraded_probe
+        return apply_idle_defaults(dirs), '', degraded_probe(message)
+    except Exception:
+        return dirs, '', {"t0_ok": False, "t0_elapsed_ms": 0.0, "t0_hits": 0,
+                          "t1_probed": 0, "t2_probed": 0, "wechat_running": False,
+                          "wechat_pids": [], "errors": [str(message)]}
+
+
+def _rank_dirs_safe(dirs):
+    """给目录加 tier/reason/pids/active/last_write_min 并排序。
+
+    Returns: (ranked_dirs, recommended_path, probe_dict)
+    任何失败都降级（原因写进 probe.errors）。
+    """
+    try:
+        from engine.services.active_dir import rank_and_probe
+    except Exception as e:
+        return _degraded_rank(dirs, "rank: 排序模块不可用: %s" % e)
+    try:
+        ranked, recommended, probe = rank_and_probe(dirs,
+                                                    config_dir=_config_db_dir())
+        return ranked, recommended, probe.as_dict()
+    except Exception as e:
+        return _degraded_rank(dirs, "rank: 排序失败: %s" % e)
+
+
 @keys_bp.route("/dirs", methods=["GET"])
 def keys_dirs():
     mode = (request.args.get("mode") or "auto").lower()
     if mode not in ("fast", "auto", "deep"):
         mode = "auto"
     dirs = _detect_dirs(mode)
-    return jsonify({"dirs": dirs, "current": _resolve_db_dir(), "mode": mode})
+    ranked, recommended, probe = _rank_dirs_safe(dirs)
+    return jsonify({"dirs": ranked, "current": _resolve_db_dir(), "mode": mode,
+                    "recommended_path": recommended,
+                    "wechat_running": bool(probe.get("wechat_running", False)),
+                    "probe": probe})
 
 
 def _resolve_db_storage(raw):
@@ -164,39 +236,87 @@ def keys_status():
 
 @keys_bp.route("/verify", methods=["POST"])
 def keys_verify():
-    from engine.manual_keys import match_entries, parse_entries, status
+    from engine.manual_keys import match_entries, parse_entries, status, summarize
 
-    data = request.get_json(silent=True) or {}
-    db_dir = _resolve_db_dir(data.get("db_dir"))
+    text, _fname = _read_pasted_text()
+    db_dir = _input_db_dir()
     if not db_dir or not os.path.isdir(db_dir):
         return jsonify({"error": "db_dir_missing",
                         "message": _dir_hint()}), 400
-    text = data.get("text") or ""
     entries = parse_entries(text)
     if not entries:
         return jsonify({"error": "empty_input", "message": "没有解析到任何密钥行"}), 400
     results = match_entries(db_dir, entries)
-    return jsonify({"results": results, "status": status(db_dir), "saved": 0})
+    return jsonify({"results": results, "status": status(db_dir), "saved": 0,
+                    "summary": summarize(entries)})
 
 
 @keys_bp.route("/save", methods=["POST"])
 def keys_save():
-    from engine.manual_keys import apply_entries, parse_entries
+    from engine.manual_keys import apply_entries, parse_entries, summarize
 
+    text, _fname = _read_pasted_text()
     data = request.get_json(silent=True) or {}
-    db_dir = _resolve_db_dir(data.get("db_dir"))
+    db_dir = _input_db_dir(data)
     if not db_dir or not os.path.isdir(db_dir):
         return jsonify({"error": "db_dir_missing",
                         "message": _dir_hint()}), 400
-    entries = parse_entries(data.get("text") or "")
+    entries = parse_entries(text)
     if not entries:
         return jsonify({"error": "empty_input", "message": "没有解析到任何密钥行"}), 400
     try:
-        out = apply_entries(db_dir, entries, force=bool(data.get("force")))
+        out = apply_entries(db_dir, entries, force=bool(data.get("force")
+                                                        or request.form.get("force")))
     except Exception as e:
         return jsonify({"error": "save_failed", "message": str(e)}), 500
     out["dbDir"] = db_dir
+    out["summary"] = summarize(entries)
     return jsonify(out)
+
+
+@keys_bp.route("/export", methods=["POST"])
+def keys_export():
+    """把解析出的 (数据库, 密钥) 对应关系导出为可直接回读的清单文件。"""
+    from engine.manual_keys import export_key_list, parse_entries, summarize
+
+    text, _fname = _read_pasted_text()
+    db_dir = _input_db_dir()
+    if not db_dir or not os.path.isdir(db_dir):
+        return jsonify({"error": "db_dir_missing",
+                        "message": _dir_hint()}), 400
+    entries = parse_entries(text)
+    if not entries:
+        return jsonify({"error": "empty_input", "message": "没有解析到任何密钥行"}), 400
+
+    # 默认写到 output/（已被 .gitignore 忽略），避免密钥文件进版本库
+    if getattr(sys, "frozen", False):
+        data_root = os.path.dirname(sys.executable)
+    else:
+        data_root = os.path.normpath(os.path.join(_BASE, ".."))
+    fname = "keys_export_%s.txt" % datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_path = os.path.join(data_root, "output", fname)
+    try:
+        res = export_key_list(db_dir, entries, out_path)
+    except Exception as e:
+        return jsonify({"error": "export_failed", "message": str(e)}), 500
+
+    if not res["count"]:
+        s = summarize(entries)
+        hint = []
+        if s.get("masked"):
+            hint.append("有 %d 行是打码/脱敏的（HMAC 校验需要完整密钥）" % s["masked"])
+        if not hint:
+            hint.append("没有解析到「数据库 + 密钥」成对的条目")
+        return jsonify({"error": "nothing_to_export",
+                        "message": "没有可导出的条目：" + "；".join(hint),
+                        "summary": s}), 400
+
+    with open(out_path, encoding="utf-8") as f:
+        content = f.read()
+    resp = make_response(content)
+    resp.headers["Content-Type"] = "text/plain; charset=utf-8"
+    resp.headers["Content-Disposition"] = "attachment; filename=%s" % fname
+    return resp
 
 
 @keys_bp.route("/remove", methods=["POST"])

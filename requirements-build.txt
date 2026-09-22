@@ -17,5 +17,8 @@ jieba>=0.42.1
 openpyxl>=3.1.0
 pypinyin>=0.49.0
 
+# WeChat process discovery (key extraction / startup watcher)
+psutil>=7.0
+
 # Build tool
 pyinstaller>=6.0.0

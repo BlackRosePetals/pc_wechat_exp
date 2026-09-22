@@ -8,6 +8,7 @@ import re
 import sqlite3
 
 from engine.services.name_resolver import pick_display_name, _find_contact_db, _load_chatroom_names, chatroom_fallback_name
+from engine.services.contact_extra import load_extra_map, load_labels, resolve_labels
 
 # Columns we always want from contact.db (core identity fields)
 _CORE_CONTACT_COLS = ['username', 'remark', 'nick_name', 'alias']
@@ -76,10 +77,11 @@ def _parse_contact_row(col_names: list, row: tuple) -> dict:
         'is_group': is_group,
     }
 
-    # Phone detection from wxid
+    # Phone detection from wxid（兜底；真实号码由 extra_buffer 覆盖，见 _attach_extra）
     phone = _phone_from_wxid(wxid)
     if phone:
         contact['phone'] = phone
+        contact['phone_source'] = 'wxid'
 
     # Extra fields
     for c in _KNOWN_EXTRA_COLS:
@@ -104,6 +106,48 @@ def _find_chats_db(decrypted_dir: str) -> str:
         if os.path.isfile(p):
             return p
     return None
+
+
+def _load_extra(decrypted_dir: str) -> tuple:
+    """Return (extra_by_wxid, labels_map) parsed from contact.db's extra_buffer.
+
+    Contact phone/sex/signature/region/tags are NOT columns of the contact table —
+    they live inside its ``extra_buffer`` protobuf blob. Static data, cached.
+    """
+    cache_key = f'_extra_cache_{decrypted_dir}'
+    cached = _EXTRA_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    contact_db = _find_contact_db(decrypted_dir)
+    result = (load_extra_map(contact_db), load_labels(contact_db))
+    _EXTRA_CACHE[cache_key] = result
+    return result
+
+
+def _attach_extra(decrypted_dir: str, contacts: list) -> None:
+    """Merge extra_buffer fields into contact dicts, in place.
+
+    Needed on BOTH load paths: the fast path reads the project's own
+    data/chats.db index, which has no extra_buffer column at all, so it must
+    fall back to contact.db to get phone numbers and tags.
+    """
+    extra_map, labels_map = _load_extra(decrypted_dir)
+    for c in contacts:
+        parsed = extra_map.get(c.get('wxid') or '') or {}
+        label_ids = parsed.get('label_ids') or []
+        c['labels'] = resolve_labels(label_ids, labels_map)
+        if label_ids:
+            c['label_ids'] = label_ids
+        if 'sex' in parsed:
+            c['sex'] = parsed['sex']
+        for field in ('signature', 'country', 'province', 'city'):
+            if parsed.get(field):
+                c[field] = parsed[field]
+        if parsed.get('phone'):
+            # 真实号码优先于"从 wxid 猜出来的号码"
+            c['phone'] = parsed['phone']
+            c['phone_source'] = ('signature' if parsed.get('phone_from_signature')
+                                 else 'contact_db')
 
 
 def _load_from_contacts_index(decrypted_dir: str) -> list:
@@ -147,10 +191,11 @@ def _load_from_contacts_index(decrypted_dir: str) -> list:
                 'last_msg_time': None,
                 'is_group': bool(d.get('is_group', 0)),
             }
-            # Phone detection
+            # Phone detection（兜底；真实号码由 extra_buffer 覆盖）
             phone = _phone_from_wxid(wxid)
             if phone:
                 contact['phone'] = phone
+                contact['phone_source'] = 'wxid'
             # Copy extra fields
             for c in _KNOWN_EXTRA_COLS:
                 val = d.get(c)
@@ -236,12 +281,14 @@ def get_all_contacts(decrypted_dir: str) -> list:
     if contacts is None:
         contacts = _load_from_contact_db(decrypted_dir)
     if contacts:
+        _attach_extra(decrypted_dir, contacts)
         _enrich_with_chatroom_names(decrypted_dir, contacts)
     _ALL_CONTACTS_CACHE[cache_key] = contacts
     return contacts
 
 
 _ALL_CONTACTS_CACHE = {}
+_EXTRA_CACHE = {}
 
 
 def _attach_chat_stats(decrypted_dir: str, contacts: dict) -> None:
@@ -263,6 +310,92 @@ def _attach_chat_stats(decrypted_dir: str, contacts: dict) -> None:
         pass
 
 
+def filter_contacts(contacts: list, q: str = '', sort: str = 'name',
+                    has_chat=None, letter: str = '', kind: str = 'all',
+                    label: str = None) -> list:
+    """Filter + sort a contact list for the address book UI and the exporters.
+
+    Extraction of the logic that used to live inline in
+    ``/api/address-book``, so the exported file always matches what the user
+    sees on screen. Semantics are kept identical to the old inline version —
+    the searchable fields are display_name / remark / nick_name / alias /
+    wxid / phone / description (signature and region are deliberately *not*
+    searched, as before).
+
+    Args:
+        q        — search keyword (case-insensitive)
+        sort     — 'name' (default), 'msg_count', 'last_time'
+        has_chat — '1' only contacts with messages, '0' only without, else all
+        letter   — first letter of display_name
+        kind     — 'all' (default), 'contacts' (exclude groups),
+                   'groups' (groups only)
+        label    — WeChat label (tag) name, matched case-insensitively against
+                   the contact's ``labels`` list
+
+    Returns a NEW list; the input (which may be the shared get_all_contacts()
+    cache) is never mutated — the old inline sort reordered that cache and
+    leaked the ordering into later requests.
+    """
+    out = list(contacts)
+
+    if kind == 'groups':
+        out = [c for c in out if c.get('is_group')]
+    elif kind == 'contacts':
+        out = [c for c in out if not c.get('is_group')]
+
+    q = (q or '').strip().lower()
+    if q:
+        def _match(c):
+            for field in ('display_name', 'remark', 'nick_name', 'alias', 'wxid'):
+                if q in (c.get(field) or '').lower():
+                    return True
+            if c.get('phone') and q in c['phone']:
+                return True
+            return bool(c.get('description') and q in c['description'].lower())
+        out = [c for c in out if _match(c)]
+
+    if has_chat == '1':
+        out = [c for c in out if (c.get('msg_count') or 0) > 0]
+    elif has_chat == '0':
+        out = [c for c in out if not (c.get('msg_count') or 0)]
+
+    label = (label or '').strip().lower()
+    if label:
+        out = [c for c in out
+               if any(label == (name or '').lower()
+                      for name in (c.get('labels') or []))]
+
+    letter = (letter or '').strip().upper()
+    if letter:
+        out = [c for c in out
+               if ((c.get('display_name') or c.get('wxid') or '')[:1].upper() == letter)]
+
+    if sort == 'msg_count':
+        out.sort(key=lambda c: c.get('msg_count') or 0, reverse=True)
+    elif sort == 'last_time':
+        out.sort(key=lambda c: c.get('last_msg_time') or 0, reverse=True)
+    else:
+        # 显式按显示名排序：旧实现依赖 get_all_contacts() 已排好序而直接跳过，
+        # 导出路径传入的列表未必有序。排序键与 get_all_contacts() 保持一致。
+        out.sort(key=lambda c: (c.get('display_name') or c.get('wxid') or '').lower())
+
+    return out
+
+
+def distinct_labels(contacts: list) -> list:
+    """Sorted unique label names present in the given contacts.
+
+    Used by the Web UI to build the label filter dropdown, so it only ever
+    offers labels that actually exist in the data.
+    """
+    seen = set()
+    for c in contacts:
+        for name in (c.get('labels') or []):
+            if name:
+                seen.add(name)
+    return sorted(seen)
+
+
 def get_all_groups(decrypted_dir: str) -> list:
     """Return all group chats with pre-computed display names.
 
@@ -273,7 +406,9 @@ def get_all_groups(decrypted_dir: str) -> list:
     # Fast path: use pre-computed contacts index
     all_contacts = _load_from_contacts_index(decrypted_dir)
     if all_contacts is not None:
-        return [c for c in all_contacts if c['is_group']]
+        groups = [c for c in all_contacts if c['is_group']]
+        _attach_extra(decrypted_dir, groups)   # 索引表没有 extra_buffer，需回源
+        return groups
 
     # Slow path: direct contact.db scan
     contact_db = _find_contact_db(decrypted_dir)
