@@ -1,6 +1,6 @@
 # WeChat EXP 使用手册
 
-> 版本：2.9.20260920 | 更新日期：2026-09-20 | 适用 WeChat 4.x（已测试 4.1.9 / 4.1.10 / 4.1.12.55 / 4.1.15.11）| Windows 10/11
+> 版本：2.9.20260922 | 更新日期：2026-09-22 | 适用 WeChat 4.x（已测试 4.1.9 / 4.1.10 / 4.1.12.55 / 4.1.15.11）| Windows 10/11
 
 ---
 
@@ -960,15 +960,20 @@ wechat_exp.exe import-keys --key "message_0.db=<64位hex>" --force
 
 ## 下载地址
 
-- 最新版本：`wechat_exp_2.9.20260920.exe` → [点击下载](https://github.com/sunhanaix/pc_wechat_exp/releases/download/v2.9.20260920/wechat_exp_2.9.20260920.exe)
+- 最新版本：`wechat_exp_2.9.20260922.exe` → [点击下载](https://github.com/sunhanaix/pc_wechat_exp/releases/download/v2.9.20260922/wechat_exp_2.9.20260922.exe)
 
 **源码地址**：[https://github.com/sunhanaix/pc_wechat_exp](https://github.com/sunhanaix/pc_wechat_exp)
 
+> **本版校验值**（下载后可比对）：`wechat_exp_2.9.20260922.exe`
+> SHA-256 = `2092A37489C74DA5507D9527A2D826EF88F5091D5DDE7FE56E7718CF78A2B30C`
+
 > ⚠️ **发布提醒（发新版时逐条照做，别只改一处）**：
 > ① 用 `build.bat` 构建；② 把 `dist/` 里的产物上传到 GitHub Releases；③ 打上与**该文件名同版本**的 tag（`v<版本>`）；
-> ④ 回过头把本节的「版本号」「下载链接」以及本行的 SHA-256 **一起**更新为实际产物的值（SHA-256 以构建产物为准，
+> ④ 回过头把本节的「版本号」「下载链接」「本版校验值」**一起**更新为实际产物的值（SHA-256 以构建产物为准，
 > 用 `Get-FileHash` 或 `certutil -hashfile <exe> SHA256` 取）。
 > **只有这四处都改了，下载链接与校验值才会与实际发布物一致。**
+> ⚠️ 另注：`build.bat` 会用**绝对路径**的自动生成版**覆盖仓库里的 `wechat_exp.spec`**，
+> 构建后请 `git checkout -- wechat_exp.spec` 把它还回来（该文件是手工维护、供 `pyinstaller wechat_exp.spec` 使用的入口）。
 
 > 反馈问题时请提供：  
 > 1. 程序运行的完整截图或文字输出  
