@@ -834,7 +834,7 @@ def _scan_wx_key_pattern(h_process, ciphertext, print_fn=None):
 # Public API
 # ---------------------------------------------------------------------------
 
-def find_keys_for_files(decrypted_dir, wxid, md5_list, print_fn=None):
+def find_keys_for_files(decrypted_dir, wxid, md5_list, print_fn=None, account_xor=None):
     """Extract V2 AES keys for specific image md5s from running WeChat process.
 
     Searches WeChat process memory for 32-char hex strings that decrypt
@@ -846,15 +846,19 @@ def find_keys_for_files(decrypted_dir, wxid, md5_list, print_fn=None):
         wxid: WeChat user ID (e.g., 'wxid_example12345_10e8')
         md5_list: list of XML md5 hex strings
         print_fn: optional logging function
+        account_xor: 已知的账号级 XOR（``code & 0xFF``）。不传时自动采用本进程内
+            已用真文件验证过的那一个（``get_derived_xor``）。
 
     Returns:
-        dict: {md5: aes_key_ascii (16 bytes)} for found keys
+        FoundV2Keys: ``{md5: aes_key_ascii (16 bytes)}``，并附带 ``derived_xor``
+        （账号级 XOR 真值；拿不到时为 ``None``）。它继承 ``dict``，所以
+        ``found[md5]`` / ``in`` / ``len`` / ``dict(found)`` 语义与历史版本一致。
     """
     if print_fn is None:
         print_fn = lambda *args, **kwargs: None
 
     if not md5_list:
-        return {}
+        return FoundV2Keys()
 
     # Build tasks: resolve each md5 to a file and get ciphertext
     tasks = []
@@ -881,14 +885,22 @@ def find_keys_for_files(decrypted_dir, wxid, md5_list, print_fn=None):
 
     if not tasks:
         print_fn("[v2_key] No valid V2 files found to find keys for")
-        return {}
+        return FoundV2Keys()
 
     print_fn(f"[v2_key] Searching memory for {len(tasks)} file(s)...")
 
     pids = _get_wechat_pids()
     if not pids:
         print_fn("[v2_key] Weixin.exe is not running")
-        return {}
+        return FoundV2Keys()
+
+    # 账号级 XOR 真值：调用方给的优先，其次本进程内已验证过的那一个。
+    # 拿不到时保持 None —— 由调用方回退 `media._DAT_V2_DEFAULT_XOR`，绝不在这里猜。
+    derived_xor = account_xor
+    if derived_xor is None:
+        derived_xor = get_derived_xor(decrypted_dir)
+    if derived_xor is not None:
+        derived_xor = int(derived_xor) & 0xFF
 
     found = {}
     for md5_val, file_path, aes_block in tasks:
@@ -927,12 +939,79 @@ def find_keys_for_files(decrypted_dir, wxid, md5_list, print_fn=None):
 
     print_fn(f"[v2_key] Found {len(found)}/{len(md5_list)} keys")
     if found:
-        _merge_into_cache(decrypted_dir, found)
-    return found
+        _merge_into_cache(decrypted_dir, found, xor_key=derived_xor)
+    return FoundV2Keys(found, derived_xor=derived_xor)
 
 
-def _merge_into_cache(decrypted_dir, new_keys):
-    """Merge newly found keys into _media_keys.json cache."""
+# ---------------------------------------------------------------------------
+# 账号级派生 XOR
+# ---------------------------------------------------------------------------
+
+# XOR 是**按账号派生**出来的真值（``code & 0xFF``），不是可以写死的常量。
+# 这里记录每个备份目录上"已经用真文件的 AES 段验证通过"的那个值，供同一进程内
+# 后续的内存扫描 / 收割路径复用。
+# issue #16 症状 2：把 XOR 写死成 0xC9 时，凡是 ``code & 0xFF != 0xC9`` 的账号，
+# 解出来的图只有上面一小部分能显示、其余是纯色/垃圾 —— 因为 XOR 只作用文件尾部。
+_DERIVED_XOR_BY_DIR = {}
+
+
+def _dir_key(decrypted_dir) -> str:
+    """把备份目录规范化成注册表键（大小写/相对路径不同的写法要指向同一条）。"""
+    try:
+        return os.path.normcase(os.path.abspath(str(decrypted_dir)))
+    except (OSError, ValueError, TypeError):
+        return str(decrypted_dir)
+
+
+def _record_derived_xor(decrypted_dir, xor_key) -> None:
+    """记住某个备份目录上**已验证**的账号级 XOR。``None`` 表示"还不知道"，不记。"""
+    if xor_key is None:
+        return
+    _DERIVED_XOR_BY_DIR[_dir_key(decrypted_dir)] = int(xor_key) & 0xFF
+
+
+def get_derived_xor(decrypted_dir):
+    """取该备份目录上已验证的账号级 XOR（``code & 0xFF``）。
+
+    返回 ``None`` = "从没成功派生过"，调用方**必须**回退
+    ``media._DAT_V2_DEFAULT_XOR`` —— 不许把 None 当 0 用，也不许自己猜一个值。
+    """
+    return _DERIVED_XOR_BY_DIR.get(_dir_key(decrypted_dir))
+
+
+class FoundV2Keys(dict):
+    """``{md5: aes_key}`` 再加上派生出来的账号级 XOR 真值。
+
+    继承 ``dict`` 是刻意的**向后兼容**选择：既有调用方的 ``found[md5]`` / ``in`` /
+    ``len`` / ``dict(found)`` 语义逐字不变；只有需要尾部 XOR 的调用方才读
+    ``derived_xor``（拿不到时为 ``None``，由调用方回退默认值）。
+    """
+
+    def __init__(self, *args, derived_xor=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.derived_xor = derived_xor
+
+
+def _same_xor(raw, xor_key: int) -> bool:
+    """缓存里的 ``xor_key`` 可能是 ``'0xc9'`` / ``'0xC9'`` / 整数 —— 一律按**数值**比。"""
+    try:
+        if isinstance(raw, str):
+            return int(raw, 16) == (int(xor_key) & 0xFF)
+        return int(raw) == (int(xor_key) & 0xFF)
+    except (TypeError, ValueError):
+        return False
+
+
+def _merge_into_cache(decrypted_dir, new_keys, xor_key=None):
+    """Merge newly found keys into _media_keys.json cache.
+
+    xor_key: 账号级派生 XOR（``code & 0xFF``）。**给出真值时写这个值**，并且会把**这批
+        md5 上**旧版本写死成 0xC9 的既有条目一并改回来（命中缓存的 md5 会在
+        ``_load_or_build_image_key_map`` 里短路掉后续所有推导，必须就地纠正）。
+        注意：这里**只**修 ``new_keys`` 里出现过的 md5，不会去重写整个缓存 ——
+        "整库回溯修复"不在这里做（见报告里的残留限制）。
+        不给出（内存扫描路径手上确实没有派生值）时保持历史行为：写 ``0xc9``。
+    """
     import json
     keys_file = os.path.join(decrypted_dir, '_media_keys.json')
 
@@ -944,23 +1023,36 @@ def _merge_into_cache(decrypted_dir, new_keys):
     except Exception:
         pass
 
+    xor_str = '0x%02x' % (int(xor_key) & 0xFF) if xor_key is not None else '0xc9'
+
     md5_keys = existing.get('md5_keys', {})
     added = 0
+    repaired = 0
     for md5_val, aes_key in new_keys.items():
-        if md5_val not in md5_keys:
+        entry = md5_keys.get(md5_val)
+        if entry is None:
             md5_keys[md5_val] = {
                 'aes_key': aes_key.hex(),
-                'xor_key': '0xc9',
+                'xor_key': xor_str,
             }
             added += 1
+        elif xor_key is not None and not _same_xor(entry.get('xor_key'), xor_key):
+            entry['xor_key'] = xor_str
+            repaired += 1
 
-    if added > 0:
+    if added or repaired:
         existing['md5_keys'] = md5_keys
         try:
             with open(keys_file, 'w', encoding='utf-8') as f:
                 json.dump(existing, f, indent=2)
         except Exception:
             pass
+        # 写入侧同样要能看出"这次用的是派生值还是默认值" —— 两者从结果上看不出区别，
+        # 正是本缺陷长期潜伏的原因之一。
+        _src = (f'derived {xor_str}' if xor_key is not None
+                else 'default 0xc9 (no derived value available)')
+        print(f"[v2_key] _media_keys.json: +{added} new, ~{repaired} repaired "
+              f"— xor source = {_src}", flush=True)
 
     return added
 
@@ -1173,6 +1265,7 @@ def extract_keys_from_mmkv(decrypted_dir: str, wxid: str = None) -> dict:
     # it works for ALL files (per-account key, not per-image).
     sample_md5s = list(pending.keys())[:5]
     verified_codes = set()
+    verified_xor = None
 
     for xor_key, aes_key, code in candidates:
         match_count = 0
@@ -1184,6 +1277,7 @@ def extract_keys_from_mmkv(decrypted_dir: str, wxid: str = None) -> dict:
             print(f"[mmkv] Code {code} verified ({match_count}/{len(sample_md5s)} sample files)",
                   flush=True)
             verified_codes.add(code)
+            verified_xor = xor_key
             # Cache for ALL pending files (not just the sample)
             for md5 in pending:
                 found_all[md5] = aes_key
@@ -1192,6 +1286,7 @@ def extract_keys_from_mmkv(decrypted_dir: str, wxid: str = None) -> dict:
             print(f"[mmkv] Code {code} partial match ({match_count}/{len(sample_md5s)})",
                   flush=True)
             verified_codes.add(code)
+            verified_xor = xor_key
             for md5 in pending:
                 found_all[md5] = aes_key
             break
@@ -1201,7 +1296,11 @@ def extract_keys_from_mmkv(decrypted_dir: str, wxid: str = None) -> dict:
     if found_all:
         print(f"[mmkv] Success! Account key derived locally — cached for {len(found_all)} files",
               flush=True)
-        _merge_into_cache(decrypted_dir, found_all)
+        # XOR 与 AES 是同一个 code 派生的（`code & 0xFF`）：AES 验证通过就意味着
+        # 账号对上了，此时必须把派生真值落盘，而不是写死 0xC9（issue #16 症状 2）。
+        if verified_xor is not None:
+            _record_derived_xor(decrypted_dir, verified_xor)
+        _merge_into_cache(decrypted_dir, found_all, xor_key=verified_xor)
     else:
         print("[mmkv] No keys matched — account may use different wxid or codes",
               flush=True)
@@ -1390,6 +1489,10 @@ def harvest_v2_keys(decrypted_dir, wxid=None, interval=2.0,
     except Exception as e:
         print_fn(f"[v2_harvest] MMKV extraction failed: {e}")
 
+    # 账号级 XOR 真值（MMKV 基线验证过时才有）：下面所有新找到的密钥都要带上它。
+    # 写死 0xC9 会让 `code & 0xFF != 0xC9` 的账号只解出图片上半截（issue #16 症状 2）。
+    derived_xor = get_derived_xor(decrypted_dir)
+
     if not is_wechat_running():
         print_fn("[v2_harvest] WeChat is not running. Start WeChat and scroll through "
                  "chats with images to expose keys in memory, then run this command.")
@@ -1494,7 +1597,8 @@ def harvest_v2_keys(decrypted_dir, wxid=None, interval=2.0,
                                              f"Found key for {md5_match[:16]}... -> {fmt}")
                                     found_all[md5_match] = candidate
                                     _merge_into_cache(decrypted_dir,
-                                                      {md5_match: candidate})
+                                                      {md5_match: candidate},
+                                                      xor_key=derived_xor)
                                     del pending[md5_match]
                                     round_found += 1
                                     if not pending:
@@ -1522,7 +1626,8 @@ def harvest_v2_keys(decrypted_dir, wxid=None, interval=2.0,
                                              f"Found key for {md5_match[:16]}... -> {fmt} (hex)")
                                     found_all[md5_match] = decoded
                                     _merge_into_cache(decrypted_dir,
-                                                      {md5_match: decoded})
+                                                      {md5_match: decoded},
+                                                      xor_key=derived_xor)
                                     del pending[md5_match]
                                     round_found += 1
                                     if not pending:
@@ -1585,7 +1690,8 @@ def harvest_v2_keys(decrypted_dir, wxid=None, interval=2.0,
                                         found_all[md5_match] = decoded
                                         _merge_into_cache(
                                             decrypted_dir,
-                                            {md5_match: decoded})
+                                            {md5_match: decoded},
+                                            xor_key=derived_xor)
                                         del pending[md5_match]
                                         round_found += 1
                                         if not pending:

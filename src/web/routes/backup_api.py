@@ -196,40 +196,58 @@ def backup_keyscan():
 
             # 2) read-only Config.Cipher scan (primary for 4.1.10+)
             push('scan', '开始只读 Config.Cipher 扫描（无需管理员权限，微信保持运行即可）...', 0.15)
+            resolution = {}
             with _stdout_lock:
                 old_stdout = _sys.stdout
                 _sys.stdout = io.StringIO()
                 try:
                     found = extract_keys_via_config_cipher(
                         db_dir, db_files, salt_to_dbs, key_map, print,
-                        lambda pct, msg: push('scan', msg, 0.15 + pct * 0.6))
+                        lambda pct, msg: push('scan', msg, 0.15 + pct * 0.6),
+                        resolution=resolution)
                     output = _sys.stdout.getvalue()
                 finally:
                     _sys.stdout = old_stdout
 
+            # issue #15：扫描器可能发现"内存里的密钥属于另一个账号目录"并自动换目标。
+            # 必须把后续的保存/统计**也切到新目标**，否则密钥会被存到错的账号名下。
+            #
+            # ⚠️ 这里**不能**直接给 `db_dir` 赋值：`_run` 是闭包，一旦在闭包里给这个名字赋值，
+            # 它就变成闭包的**局部变量**，上面 `collect_db_files(db_dir)` 会立刻抛
+            # `UnboundLocalError`（本端点原先没有测试覆盖，这个坑是加了端点测试才被抓到的）。
+            # ⇒ 一律用新的局部名。
+            eff_db_dir, eff_db_files, eff_salt_to_dbs, eff_total = (
+                db_dir, db_files, salt_to_dbs, total)
+            if resolution.get('retargeted'):
+                eff_db_dir = resolution['db_dir']
+                eff_db_files = resolution['db_files']
+                eff_salt_to_dbs = resolution['salt_to_dbs']
+                eff_total = len(eff_salt_to_dbs)
+                push('scan', f'已自动改用微信正在使用的账号目录（内存里的密钥属于它）：{eff_db_dir}', 0.76)
+
             # 3) fallback: full key_scan chain (MMKV -> hook -> memscan)
-            if len(key_map) < total:
-                push('scan', f'只读扫描获得 {len(key_map)}/{total}，'
+            if len(key_map) < eff_total:
+                push('scan', f'只读扫描获得 {len(key_map)}/{eff_total}，'
                              '尝试完整策略链 (MMKV/Hook/内存扫描)...', 0.80)
                 from key_scan import run_key_scan
                 with _stdout_lock:
                     old_stdout = _sys.stdout
                     _sys.stdout = io.StringIO()
                     try:
-                        run_key_scan(db_dir, None)
+                        run_key_scan(eff_db_dir, None)
                         output += '\n' + _sys.stdout.getvalue()
                     finally:
                         _sys.stdout = old_stdout
 
             # 4) persist any newly found keys
             if key_map:
-                save_key_results(db_files, salt_to_dbs, key_map, db_dir, print)
+                save_key_results(eff_db_files, eff_salt_to_dbs, key_map, eff_db_dir, print)
 
             from engine.config_file import get_db_keys
             keys = get_db_keys()
             result = {'keys': len(keys) if keys else len(key_map),
-                      'total': total,
-                      'source': 'config-cipher' if len(key_map) >= total else 'mixed',
+                      'total': eff_total,
+                      'source': 'config-cipher' if len(key_map) >= eff_total else 'mixed',
                       'output': output}
             push.done(result)
         except Exception as e:

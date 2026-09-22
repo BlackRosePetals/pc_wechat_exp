@@ -29,6 +29,7 @@ import ctypes
 import ctypes.wintypes as wt
 import hashlib
 import hmac as hmac_mod
+import os
 import re
 import struct
 import time
@@ -244,18 +245,136 @@ def _blob_key_candidates(blob):
 # ---------------------------------------------------------------------------
 #  Per-process scan
 # ---------------------------------------------------------------------------
+def _detect_db_dirs():
+    """本机所有微信 ``db_storage`` 候选目录。
+
+    单独的薄封装只是为了**可被测试注入**（测试里绝不允许去探测本机真实微信目录）。
+    """
+    try:
+        from engine.utils import find_all_wechat_data_dirs
+        return [d.get('db_path') for d in find_all_wechat_data_dirs() if d.get('db_path')]
+    except Exception:
+        return []
+
+
+def find_db_dir_matching_salts(candidate_salts, exclude=None, db_dirs=None):
+    """找出"这批候选密钥的 salt 与哪个 ``db_storage`` 最匹配"（issue #15 的根因修法）。
+
+    背景：微信 4.x 每个库有自己的密钥，内存里 Config.Cipher 里那批密钥属于
+    **当前正在运行的那个账号**。如果被扫描的目录是**另一个账号**（多账号机器上很常见，
+    界面里那个"上次用过的目录"就是），就会出现"取到了一堆候选、但一个都验不过"。
+
+    与"微信不支持/版本变了"的区别是**可判定的**：候选密钥**自带 salt**，
+    拿它们去和每个候选目录的 salt 表求交即可 —— 相交不为空说明"内存里这批密钥属于这个目录"。
+
+    Returns:
+        ``(db_dir, hits)``；没有任何目录有交集时返回 ``(None, 0)``。**从不抛异常。**
+    """
+    cand = set(s.lower() for s in (candidate_salts or set()) if s)
+    if not cand:
+        return None, 0
+    if db_dirs is None:
+        db_dirs = _detect_db_dirs()
+    ex = os.path.normcase(os.path.normpath(exclude)) if exclude else None
+    best_dir, best_hits = None, 0
+    for d in db_dirs or []:
+        if not d:
+            continue
+        if ex and os.path.normcase(os.path.normpath(d)) == ex:
+            continue
+        try:
+            from engine.services.wechat_key_extract import collect_db_files
+            _files, salt_to_dbs = collect_db_files(d)
+        except Exception:
+            continue
+        hits = len(cand & set(s.lower() for s in salt_to_dbs))
+        if hits > best_hits:
+            best_dir, best_hits = d, hits
+    return best_dir, best_hits
+
+
+def _explain_failure(stats_list, salt_to_dbs, cand_salts, print_fn, *, opening_advice=True):
+    """失败时给出**原因 + 可操作建议**（issue #15 用户明确要求的那一条）。
+
+    以前这里只留一句"未能从任何微信进程中提取到密钥"，用户无从下手。
+    现在把每进程的原始计数与**分档结论**都打出来，并给出下一步。
+    """
+    print_fn("[Cipher] 未能提取到任何密钥。本次扫描的诊断信息：")
+    for i, st in enumerate(stats_list, 1):
+        if st.get('opened'):
+            print_fn("  进程#%d: 可读内存区域 %d | Config.Cipher 字样 %d 处 | 节点 %d | "
+                     "候选密钥 %d | 验证通过 %d"
+                     % (i, st.get('regions', 0), st.get('needles', 0), st.get('nodes', 0),
+                        st.get('candidates', 0), st.get('verified', 0)))
+        else:
+            print_fn("  进程#%d: **打不开**（OpenProcess 失败，GetLastError=%d）"
+                     " | 其余统计不可用"
+                     % (i, st.get('open_error', 0)))
+
+    n_pids = len(stats_list)
+    opened = [st for st in stats_list if st.get('opened')]
+    needles = sum(st.get('needles', 0) for st in stats_list)
+    nodes = sum(st.get('nodes', 0) for st in stats_list)
+    cands = sum(st.get('candidates', 0) for st in stats_list)
+    known_salts = set(s.lower() for s in (salt_to_dbs or {}))
+    cand_set = set(s.lower() for s in (cand_salts or set()) if s)
+
+    print_fn("[Cipher] 分档结论：")
+    if n_pids and not opened:
+        errs = sorted(set(st.get('open_error', 0) for st in stats_list))
+        print_fn("  * 一个微信进程都读不了（GetLastError=%s）。"
+                 "ERROR_ACCESS_DENIED(5) 最常见的原因是**权限不足**。"
+                 % (','.join(str(e) for e in errs)))
+        if opening_advice:
+            print_fn("    建议：**以管理员身份重新运行本程序**后重试；"
+                     "同时确认杀软没有拦截对微信进程的读取。")
+    elif needles == 0:
+        print_fn("  * 在所有进程的内存里**都没有找到 Config.Cipher 字样** ⇒ "
+                 "多半不是微信主进程，或该微信版本的对象结构已不同。")
+        print_fn("    建议：确认微信**已登录并保持运行**；以管理员身份重试；"
+                 "仍失败请改用「Hook」策略或参考 README 的手动输入密钥。")
+    elif nodes == 0:
+        print_fn("  * 找到了 Config.Cipher 字样（%d 处），但**没有任何节点结构匹配上** ⇒ "
+                 "通常是微信版本变化导致内存布局不同。" % needles)
+        print_fn("    建议：核对微信版本（本项目在 4.1.12.55 上验证）；"
+                 "把本文诊断信息反馈给维护者。")
+    elif cands == 0:
+        print_fn("  * 找到了节点（%d 个），但**没能从配置块里取出任何候选密钥** ⇒ "
+                 "配置块的读取或解码有问题。" % nodes)
+        print_fn("    建议：以管理员身份重试；仍失败请把本文诊断信息反馈给维护者。")
+    elif cand_set and known_salts and not (cand_set & known_salts):
+        print_fn("  * 取到了 %d 个候选密钥，但它们**自带的 salt 与被扫描的 %d 个数据库"
+                 "一个都不匹配**。" % (cands, len(known_salts)))
+        print_fn("    ⇒ 最可能的原因是：**你扫描的 db_storage 与当前登录的微信账号不是同一个**"
+                 "（多账号机器上很容易发生——界面里那个目录可能是上次用过的另一个账号）。")
+        print_fn("    建议：在页面上确认「微信数据目录」选的是**微信正在使用的那个**"
+                 "（可用「🔍 深度搜索 / 检测到的数据目录」里的推荐项，标有 ⭐ 的就是正在使用的），"
+                 "或直接在微信里「设置 → 文件管理 → 打开文件夹」核对后重试。")
+    else:
+        print_fn("  * 取到了 %d 个候选密钥，与所扫目录的 salt 有交集，但**全部未通过校验** ⇒ "
+                 "这些库可能已被换过密钥，或首页数据异常。" % cands)
+        print_fn("    建议：用「Hook」策略重试，或在「手动输入密钥」页粘贴密钥后导入。")
+
+
 def scan_pid_for_config_cipher(pid, db_files, salt_to_dbs, key_map, print_fn,
                                remaining_salts):
     """Read-only Config.Cipher scan of one WeChat PID.
 
     Returns dict of stats; mutates key_map / remaining_salts in place.
     """
-    stats = {"needles": 0, "nodes": 0, "candidates": 0, "verified": 0}
+    stats = {"needles": 0, "nodes": 0, "candidates": 0, "verified": 0,
+             # issue #15：诊断字段 —— "打不开进程"与"打开了但没找到"必须能区分开
+             "opened": False, "open_error": 0, "regions": 0,
+             # 候选密钥**自带的 salt**：用来判定"内存里这批密钥属于哪个账号目录"
+             "cand_salts": set()}
     h = kernel32.OpenProcess(0x0010 | 0x0400, False, pid)  # VM_READ|QUERY
     if not h:
+        stats["open_error"] = int(kernel32.GetLastError() or 0)
         return stats
+    stats["opened"] = True
     try:
         regions = enum_regions(h)
+        stats["regions"] = len(regions) if regions else 0
         if not regions:
             return stats
 
@@ -308,6 +427,8 @@ def scan_pid_for_config_cipher(pid, db_files, salt_to_dbs, key_map, print_fn,
                                                     continue
                                                 seen_cands.add(cand)
                                                 stats["candidates"] += 1
+                                                if emb_salt:
+                                                    stats["cand_salts"].add(emb_salt)
                                                 try:
                                                     key = bytes.fromhex(key_hex)
                                                 except ValueError:
@@ -340,7 +461,7 @@ def scan_pid_for_config_cipher(pid, db_files, salt_to_dbs, key_map, print_fn,
 #  Top-level entry (strategy-compatible with key_scan / wechat_key_extract)
 # ---------------------------------------------------------------------------
 def extract_keys_via_config_cipher(db_dir, db_files, salt_to_dbs, key_map,
-                                   print_fn=None, progress_fn=None):
+                                   print_fn=None, progress_fn=None, *, resolution=None):
     """Extract DB keys with the read-only Config.Cipher scan.
 
     No admin rights, no WeChat restart, no hooking. Works on WeChat 4.1.10+
@@ -352,6 +473,13 @@ def extract_keys_via_config_cipher(db_dir, db_files, salt_to_dbs, key_map,
         salt_to_dbs: {salt_hex: [rel,...]}
         key_map: dict being filled {salt_hex: key_hex}
         print_fn / progress_fn: optional callbacks
+        resolution: 可选出参。若本次**自动换过目标目录**（issue #15：内存里的密钥属于
+            另一个账号），这里会被填上 ``{'db_dir','db_files','salt_to_dbs','retargeted','reason'}``
+            —— 调用方必须据此**改用新的目标**去保存结果，否则密钥会存到错的账号名下。
+            失败时也会写入 ``reason``（``no_pids`` / ``no_keys`` / ``account_mismatch``）。
+
+    Returns:
+        int — 本次验证通过的密钥数（语义与旧版一致；新增的 ``resolution`` 是**可选**的）。
     """
     if print_fn is None:
         print_fn = print
@@ -366,6 +494,8 @@ def extract_keys_via_config_cipher(db_dir, db_files, salt_to_dbs, key_map,
     if not pids:
         print_fn("[Cipher] 未检测到微信进程。请先启动微信并登录，然后重试。")
         print_fn("[Cipher] 启动微信后无需任何额外操作——本扫描为只读，不注入、不重启。")
+        if resolution is not None:
+            resolution['reason'] = 'no_pids'
         return 0
 
     progress_fn(0, "Config.Cipher 只读扫描：检测到微信进程，开始定位密钥对象...")
@@ -373,20 +503,67 @@ def extract_keys_via_config_cipher(db_dir, db_files, salt_to_dbs, key_map,
     print_fn("[Cipher] 只读扫描 WCDB Config.Cipher 对象 (无需管理员权限) ...")
 
     t0 = time.time()
+    stats_list, total_found, cand_salts = _scan_pids_for_keys(
+        pids, db_files, salt_to_dbs, key_map, print_fn, progress_fn, remaining)
+
+    # --- issue #15 的根因修法：候选取到了却一个都没验过 ⇒ 先怀疑"扫错账号目录" ---
+    # 内存里那批密钥属于**当前正在运行的账号**；候选**自带 salt**，所以"属于哪个目录"是**可判定**的。
+    if not total_found and cand_salts:
+        new_dir, hits = find_db_dir_matching_salts(cand_salts, exclude=db_dir)
+        if new_dir:
+            print_fn(f"[Cipher] 注意：本次取到的 {len(cand_salts)} 个候选密钥的 salt "
+                     f"与被扫描的目录**完全不匹配**，但与另一个微信数据目录匹配 {hits} 个。")
+            print_fn(f"[Cipher] 内存里的密钥属于**当前正在运行的那个账号** ⇒ "
+                     f"自动改用该目录重扫一次：{new_dir}")
+            try:
+                from engine.services.wechat_key_extract import collect_db_files
+                new_files, new_salts = collect_db_files(new_dir)
+            except Exception as e:
+                print_fn(f"[Cipher] 读取该目录失败({type(e).__name__})，继续用原目录的结论。")
+                new_files = None
+            if new_files:
+                remaining2 = set(new_salts) - set(key_map)
+                if remaining2:
+                    stats2, found2, _c2 = _scan_pids_for_keys(
+                        pids, new_files, new_salts, key_map, print_fn, progress_fn, remaining2)
+                    stats_list += stats2
+                    total_found += found2
+                if total_found and resolution is not None:
+                    resolution.update({'db_dir': new_dir, 'db_files': new_files,
+                                       'salt_to_dbs': new_salts, 'retargeted': True,
+                                       'reason': 'account_mismatch'})
+                elif not total_found:
+                    print_fn("[Cipher] 换到该目录后仍然没能验证通过。")
+
+    if not total_found:
+        _explain_failure(stats_list, salt_to_dbs, cand_salts, print_fn)
+
+    print_fn(f"[Cipher] 扫描完成: {time.time() - t0:.1f}s, "
+             f"共验证 {total_found} 个密钥")
+    if resolution is not None and not total_found and 'reason' not in resolution:
+        resolution['reason'] = 'no_keys'
+    return total_found
+
+
+def _scan_pids_for_keys(pids, db_files, salt_to_dbs, key_map, print_fn, progress_fn,
+                        remaining):
+    """逐 PID 扫描；返回 ``(stats_list, total_found, cand_salts)``。"""
+    stats_list = []
     total_found = 0
+    cand_salts = set()
     for mem, pid in pids:
         if not remaining:
             break
         stats = scan_pid_for_config_cipher(pid, db_files, salt_to_dbs, key_map,
                                            print_fn, remaining)
+        stats_list.append(stats)
+        cand_salts |= set(stats.get('cand_salts') or ())
         progress_fn(min(90, 20 + total_found * 5),
-                    f"进程 PID={pid}: 验证 {stats['verified']} 个密钥...")
+                    f"进程 PID={pid}: 已验证 {stats['verified']} 个密钥"
+                    f"（候选 {stats['candidates']} 个）")
         if stats["verified"]:
             total_found += stats["verified"]
             print_fn(f"[Cipher] PID={pid}: {stats['verified']} 个密钥验证通过 "
                      f"(节点 {stats['nodes']}, 候选 {stats['candidates']})")
-
-    print_fn(f"[Cipher] 扫描完成: {time.time() - t0:.1f}s, "
-             f"共验证 {total_found} 个密钥")
-    return total_found
+    return stats_list, total_found, cand_salts
 

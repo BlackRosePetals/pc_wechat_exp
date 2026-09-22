@@ -27,6 +27,18 @@ _DAT_V1_AES_KEY = bytes.fromhex('cfcd208495d565ef')
 # Cache of image AES keys collected from type 3 XML messages
 _image_aes_keys = {}
 
+# 已知的微信数据根目录（**兜底**用）。
+# 优先用 hardlink.db 的 db_info 推出的真实根；这里只是"配置文件里什么都没有"时的最后一招。
+# 提成模块常量而不是内联字面量，是为了：① 单测可以注入，避免测试去探测本机真实微信目录；
+# ② 让"哪些路径会被探测"这件事在一处可见（issue #16 之后新增的纪律）。
+_FALLBACK_STORAGE_ROOTS = (
+    r'D:\xwechat_files', r'C:\xwechat_files',
+    r'D:\WeChat Files', r'C:\WeChat Files',
+)
+
+# 单个存储根下最多探测多少个账号目录（防止异常目录把一次请求拖死）。
+_MAX_ACCOUNT_DIRS = 32
+
 
 def _detect_wxid(decrypted_dir: str) -> str:
     """Auto-detect the WeChat user wxid from the storage directory.
@@ -52,12 +64,11 @@ def _detect_wxid(decrypted_dir: str) -> str:
                 if len(parts) >= 3:
                     storage_root = parts[-1]
                     if os.path.isdir(storage_root):
-                        # Find the wxid dir in storage root (exclude dot-dirs, all_users)
-                        for d in os.listdir(storage_root):
-                            if d.startswith('wxid_') and os.path.isdir(
-                                os.path.join(storage_root, d)
-                            ):
-                                return d
+                        # 账号目录名**不一定**带 wxid_ 前缀，且可能有多个账号（issue #16）：
+                        # 先挑有 db_storage 的，再退到 wxid_ 前缀，最后退到任意真实目录。
+                        picked = _pick_account_dir(storage_root)
+                        if picked:
+                            return picked
         except (sqlite3.Error, OSError):
             pass
         finally:
@@ -65,15 +76,12 @@ def _detect_wxid(decrypted_dir: str) -> str:
                 conn.close()
 
     # Strategy 2: Scan known storage locations
-    for storage_root in [r'D:\xwechat_files', r'C:\xwechat_files',
-                         r'D:\WeChat Files', r'C:\WeChat Files']:
+    for storage_root in _FALLBACK_STORAGE_ROOTS:
         try:
             if os.path.isdir(storage_root):
-                for d in os.listdir(storage_root):
-                    if d.startswith('wxid_') and os.path.isdir(
-                        os.path.join(storage_root, d)
-                    ):
-                        return d
+                picked = _pick_account_dir(storage_root)
+                if picked:
+                    return picked
         except OSError:
             continue
 
@@ -109,6 +117,76 @@ def _get_base_storage(decrypted_dir: str) -> str:
     return None
 
 
+def _storage_roots(decrypted_dir: str) -> list:
+    """本次要探测的存储根：由 db_info 推出的**真实根**优先，其后是已知兜底根。"""
+    roots = []
+    base = _get_base_storage(decrypted_dir)
+    if base:
+        roots.append(base)
+    for sr in _FALLBACK_STORAGE_ROOTS:
+        if os.path.isdir(sr) and sr not in roots:
+            roots.append(sr)
+    return roots
+
+
+def _account_dirs_under(storage_root: str) -> list:
+    """列出 storage_root 下**可能**是账号目录的真实子目录（排序后，结果稳定）。
+
+    issue #16：微信 4.x 的账号目录名有时就是 wxid、有时是 wxid+随机后缀、
+    **有时完全不带 ``wxid_`` 前缀**，而且同一台机器上可能同时存在多个账号。
+    所以这里**不按名字筛**，只要求它是真实目录 —— "到底是哪一个"交给调用方用
+    "文件是否真的存在"来判定，而不是靠名字猜。
+    """
+    try:
+        names = sorted(os.listdir(storage_root))
+    except OSError:
+        return []
+    out = []
+    for n in names:
+        if n.startswith('.'):
+            continue
+        if os.path.isdir(os.path.join(storage_root, n)):
+            out.append(n)
+            if len(out) >= _MAX_ACCOUNT_DIRS:
+                break
+    return out
+
+
+def _pick_account_dir(storage_root: str):
+    """在存储根下挑一个最像账号的目录：**有 db_storage 的优先**，其次 ``wxid_`` 前缀，其次任意目录。"""
+    dirs = _account_dirs_under(storage_root)
+    for d in dirs:
+        if os.path.isdir(os.path.join(storage_root, d, 'db_storage')):
+            return d
+    for d in dirs:
+        if d.startswith('wxid_'):
+            return d
+    return dirs[0] if dirs else None
+
+
+def resolve_account_dir(decrypted_dir: str, wxid: str = None):
+    """返回**校验过的**账号目录名；没有任何可信取值时返回 ``None``（issue #16 根因修法）。
+
+    规则：
+      * 传入的 ``wxid`` 只有**确实是某个存储根下的真实目录**时才被采用；
+      * 否则改用 :func:`_detect_wxid` 的检测结果（同样要求是真实目录）；
+      * 两者都不可信 ⇒ 返回 ``None``。
+
+    返回规则里最后一条**很重要**：校验失败时**不要**把调用方给的值抹成 ``None`` ——
+    我们只是"证明不了它对"，并没有"证明它错"。抹成 ``None`` 会让 `own_wxid` 这类功能
+    从"可能错"变成"必然缺"（并会连带弄坏大量用合成账号名的测试）。
+    只有当**确实找到了一个校验通过的真实目录**时，才替换调用方给的值。
+    """
+    wxid = (wxid or '').strip()
+    roots = _storage_roots(decrypted_dir)
+    if wxid and any(os.path.isdir(os.path.join(r, wxid)) for r in roots):
+        return wxid
+    detected = _detect_wxid(decrypted_dir)
+    if detected and any(os.path.isdir(os.path.join(r, detected)) for r in roots):
+        return detected
+    return wxid or None
+
+
 def _resolve_hardlink_path(decrypted_dir: str, media_info: dict, wxid: str = None) -> str:
     """Resolve a HardLink-based media reference to an absolute filesystem path.
 
@@ -125,25 +203,34 @@ def _resolve_hardlink_path(decrypted_dir: str, media_info: dict, wxid: str = Non
     md5 = media_info.get('md5', '')
     media_type = media_info.get('media_type', 0)
 
-    wxid = wxid or os.path.basename(os.path.dirname(decrypted_dir))
+    # ⚠️ 这里**不再**用 `wxid or os.path.basename(os.path.dirname(decrypted_dir))`：
+    # 对 `<...>\backup\2026-09-21` 这类布局，那个回退值就是 `'backup'`/`'output'`（备份目录名），
+    # **必然错**，而错一个名字就会让所有媒体 0 命中且不报错（issue #16 实测：传对 5/12，传错 0/12）。
+    # 现在改成：给的名字优先，其后枚举存储根下**真实存在**的目录，胜负由"文件是否真的存在"决定。
+    storage_roots = _storage_roots(decrypted_dir)
+    _account_cache = {}
+
+    def _account_candidates(root):
+        """候选账号目录名（缓存：一次解析里会被多个候选相对路径复用）。"""
+        if root in _account_cache:
+            return _account_cache[root]
+        names = []
+        if wxid:
+            names.append(wxid)
+        for d in _account_dirs_under(root):
+            if d not in names:
+                names.append(d)
+        names.append('')   # 有些布局里"账号目录"就等于存储根本身
+        _account_cache[root] = names
+        return names
 
     # Helper: try all combinations of base + wxid + path
     def _try_paths(rel_path):
         if not rel_path:
             return None
         rel_path = rel_path.replace('/', os.sep)
-        storage_roots = []
-        base = _get_base_storage(decrypted_dir)
-        if base:
-            storage_roots.append(base)
-        for sr in ['D:\\xwechat_files', 'C:\\xwechat_files',
-                   'D:\\WeChat Files', 'C:\\WeChat Files']:
-            if os.path.isdir(sr) and sr not in storage_roots:
-                storage_roots.append(sr)
         for root in storage_roots:
-            for wd in [wxid, '']:
-                if not wd:
-                    continue
+            for wd in _account_candidates(root):
                 candidate = os.path.join(root, wd, rel_path)
                 try:
                     real = os.path.realpath(candidate)
@@ -639,13 +726,27 @@ def _load_or_build_image_key_map(decrypted_dir: str) -> dict:
             with open(keys_file, 'r', encoding='utf-8') as f:
                 cached = _json.load(f)
             md5_keys = cached.get('md5_keys', {})
+            _xor_from_cache = 0
+            _xor_defaulted = 0
             for md5, v in md5_keys.items():
                 try:
+                    _raw_xor = v.get('xor_key')
+                    if _raw_xor is None or (isinstance(_raw_xor, str)
+                                            and not _raw_xor.strip()):
+                        # 字段缺失/为空 ⇒ 回退**默认值**。
+                        # ⚠️ 绝不能退化成 0：0 = 尾部一个字节都不 XOR ⇒ 尾部原样返回，
+                        # 后果与"用错密钥"完全相同，却更隐蔽（issue #16 症状 2 同族）。
+                        xor_val = _DAT_V2_DEFAULT_XOR
+                        _xor_defaulted += 1
+                    else:
+                        xor_val = (int(_raw_xor, 16) if isinstance(_raw_xor, str)
+                                   else int(_raw_xor))
+                        _xor_from_cache += 1
                     result[md5] = {
                         'aes': bytes.fromhex(v['aes_key']),
-                        'xor': int(v.get('xor_key', '0'), 16)
+                        'xor': xor_val
                     }
-                except (ValueError, KeyError):
+                except (ValueError, KeyError, TypeError):
                     pass
             if result:
                 # Ensure _h thumbnail variants exist for all cached keys
@@ -658,7 +759,16 @@ def _load_or_build_image_key_map(decrypted_dir: str) -> dict:
                             _h_added += 1
                 if _h_added:
                     print(f"[media] Added {_h_added} _h thumbnail variants to cached keys", flush=True)
-                print(f"[media] Loaded {len(result)} verified keys from cache", flush=True)
+                # 把"这次用的是缓存里的值"还是"回退到默认值"显式打出来 ——
+                # 这个缺陷之所以长期存在，正是因为两者从外部看不出区别。
+                if _xor_defaulted:
+                    print(f"[media] Loaded {len(result)} verified keys from cache "
+                          f"(xor: from cache={_xor_from_cache}, "
+                          f"missing xor_key → default 0x{_DAT_V2_DEFAULT_XOR:02X}="
+                          f"{_xor_defaulted} — NOT a derived value)", flush=True)
+                else:
+                    print(f"[media] Loaded {len(result)} verified keys from cache "
+                          f"(xor from cache for all {_xor_from_cache})", flush=True)
 
     except Exception:
         pass
@@ -1004,6 +1114,114 @@ def _sniff_image_mime(head: bytes) -> str:
     return "application/octet-stream"
 
 
+# --- 图片完整性（三态）校验：issue #46 ---------------------------------------
+# 用途：判断一个**已经解出来**的图片候选是不是"尾部被截断 / 被解错"。
+# 为什么必须三态、不许塌成布尔：
+#   控制方用真实数据实测过 —— 本机 `decrypted_media` 缓存 31 个文件（28 JPEG / 3 PNG）里
+#   **2 个 JPEG 缺 EOI（≈7%）**，很可能是**源图本身就被截断**、但实际**能正常显示**。
+#   ⇒ 绝不允许把"缺尾"当成"这张图不能给用户"。因此 `None`（不可判定）必须与 `False`
+#   （可判定类型且**确认**缺尾）分开：`None` 走原行为（立刻返回），只有 `False` 才降级。
+_IMAGE_COMPLETENESS_MIN_SIZE = 32   # 比这更短 ⇒ 连"尾部"都谈不上，判不了（返回 None）
+_IMAGE_TAIL_WINDOW = 64             # 判断只读尾部这么多个字节（原图可能几十 MB，别整块读）
+_PNG_IEND = b"\x00\x00\x00\x00IEND\xaeB`\x82"   # 标准 12 字节 IEND 块
+# 只有这些格式的"完整尾部"能用一把固定 magic 判定；其它一律 None（不可判定）
+_IMAGE_DECIDABLE_MIMES = ("image/jpeg", "image/png", "image/gif")
+
+
+def _tail_verdict(mime: str, tail: bytes):
+    """按类型判定尾部（只在 ``mime`` 属于 ``_IMAGE_DECIDABLE_MIMES`` 时才有意义）。"""
+    if mime == "image/jpeg":
+        return tail[-2:] == b"\xff\xd9"
+    if mime == "image/png":
+        return tail[-len(_PNG_IEND):] == _PNG_IEND
+    if mime == "image/gif":
+        return tail[-1:] == b"\x3b"
+    return None
+
+
+def _image_completeness(data_or_path, mime: str = None):
+    """三态"图片完整性"校验：``True`` 完整 / ``False`` 可判定类型且确认缺尾 / ``None`` 不可判定。
+
+    * **JPEG**：结尾必须是 ``FF D9``；否则 ``False``；
+    * **PNG** ：结尾必须是标准 12 字节 IEND 块（``_PNG_IEND``）；否则 ``False``；
+    * **GIF** ：结尾必须是 ``0x3B``；否则 ``False``；
+    * **WEBP / BMP / 其它 / 数据太短** ⇒ ``None``（**不可判定**：这些格式尾部没有可以一把判定
+      "完整"的固定 magic，或信息不足）。
+
+    ``data_or_path`` 既可以是完整字节串，也可以是文件路径 —— 走路径时**只读头 16 字节 +
+    尾 ``_IMAGE_TAIL_WINDOW`` 字节**（避免为了一次校验把几十 MB 的原图整块读进内存）；
+    而且**不可判定/太短的路径连尾部都不读**就返回 ``None``：`None` 这条路上不许比旧行为
+    多任何一次 IO（WEBP/BMP 仍然要"立刻返回、不变慢"）。
+    读不到文件（被删/被占）也返回 ``None``：判不了就按原行为处理，不许因此拒绝服务。
+    """
+    if data_or_path is None:
+        return None
+
+    if isinstance(data_or_path, (bytes, bytearray, memoryview)):
+        data = bytes(data_or_path)
+        size = len(data)
+        head = data[:16]
+        tail = data[-_IMAGE_TAIL_WINDOW:]
+    else:
+        try:
+            size = os.path.getsize(data_or_path)
+            if size <= 0:
+                return None
+            with open(data_or_path, 'rb') as f:
+                head = f.read(16)
+                if mime is None:
+                    mime = _sniff_image_mime(head)
+                if mime not in _IMAGE_DECIDABLE_MIMES or size < _IMAGE_COMPLETENESS_MIN_SIZE:
+                    return None      # 不可判定/太短：**连尾部都不读**
+                if size > _IMAGE_TAIL_WINDOW:
+                    f.seek(size - _IMAGE_TAIL_WINDOW)
+                else:
+                    f.seek(0)
+                tail = f.read(_IMAGE_TAIL_WINDOW)
+        except OSError:
+            return None
+
+    if mime is None:
+        mime = _sniff_image_mime(head)
+    if mime not in _IMAGE_DECIDABLE_MIMES or size < _IMAGE_COMPLETENESS_MIN_SIZE:
+        return None
+    return _tail_verdict(mime, tail)
+
+
+def _describe_incompleteness(mime: str) -> str:
+    """把"缺哪种尾"说成人话（日志/取证用；不许含糊成"坏了"）。"""
+    if mime == "image/jpeg":
+        return "JPEG 缺 EOI（结尾不是 FF D9）"
+    if mime == "image/png":
+        return "PNG 缺 IEND 块"
+    if mime == "image/gif":
+        return "GIF 缺尾部 0x3B"
+    return f"{mime} 缺尾部"
+
+
+def _pick_incomplete_candidate(candidates):
+    """从"未通过完整性校验"的候选里挑一个作为最后兜底：**当前大小最大**者，平手取先出现的。
+
+    为什么按大小而不是按候选链顺序：这些候选**都已经**被判"缺尾"，用户能看到的内容只可能
+    与**已经解出来的像素量**正相关 ⇒ 原图（大）比缩略图（小）更接近他的预期；拿小的会让
+    用户看到的内容比改动前**更少**，那是纯粹的退步。
+
+    ⚠️ 大小按**取用当时**重算而不是暂存时记录：同一源文件的多个候选共享同一个输出路径
+    （``_decrypt_dat_v2`` 按源路径命名），后一次解密会覆盖前一次的字节。所以这里重算，
+    并且跳过已经被删除的路径。
+    """
+    best = None
+    best_size = -1
+    for cand in candidates:
+        try:
+            size = os.path.getsize(cand['path'])
+        except (OSError, KeyError, TypeError):
+            continue
+        if size > best_size:
+            best, best_size = cand, size
+    return best
+
+
 def tools_dir() -> str:
     """本程序的 tools 目录（放 ffmpeg.exe / silk_decoder.exe 的地方）。
 
@@ -1215,7 +1433,26 @@ def _decrypt_dat_v2(file_path: str, aes_key: bytes, xor_key: int = None, output_
     if hdr_xor_size > 0 and raw_start + hdr_xor_size <= len(data):
         raw_data = data[raw_start:-hdr_xor_size]
         xor_data = data[-hdr_xor_size:]
+    elif hdr_xor_size > 0:
+        # 【防御性 / 一致性修复，**不是** issue #16 症状 2 的根因 —— 本机无实测实例】
+        # 头部声称的 XOR 长度**超过实际剩余**（字段被钳在某个上限、或文件没下完被截断）。
+        # 控制方/调查员在全库 18714 个 V2 上实测：`plain < file_size` = 0/18714、
+        # 头部 `delta<0` = 0/41747、`len(raw 明文) == file_size` = 1229/1229
+        # ⇒ 本机没有文件会走到这里；且"截断"本身**不产生绿条**（缺失区被掩盖，绿 0.0000），
+        # 所以它**解释不了**用户看到的 `rgb(0,135,0)` —— 那是"中段被 XOR 破坏"才有的指纹。
+        # 之所以还是按"整段剩余都 XOR"处理：① 一个字节都不 XOR = 把**密文**当明文交给解码器，
+        # 是静默隐患；② 同仓库 V1 解码器（``_decrypt_dat_v1``）就是 ``xor_data = data[raw_start:]``，
+        # 根本不看头里的 xor_size —— V2 这里才是语义不一致的那一个。
+        # ⚠️ 假设：声称长度 > 剩余时，剩余字节都是 XOR 区（本机无法判定；若真存在"大段未加密
+        # 中段 + xor_size 被写大"，本分支会把中段也 XOR 一遍。消歧可后续用"尾部是否为合法
+        # 文件尾（JPEG FF D9 / PNG IEND）"来做，本任务没做）。
+        raw_data = b''
+        xor_data = data[raw_start:]
+        print(f"  [V2] 头部声称 XOR 长度 {hdr_xor_size} > 实际剩余 "
+              f"{len(data) - raw_start} —— 按可用长度 XOR 尾部"
+              f"（防御性一致性修复；本机无实测实例，不代表症状 2 的成因）", flush=True)
     else:
+        # hdr_xor_size == 0 = 声明"没有 XOR 尾部"，保持既有语义：尾部就是明文
         raw_data = data[raw_start:]
         xor_data = b''
 
@@ -1412,8 +1649,67 @@ def serve_hardlink_media(decrypted_dir: str, media_info: dict, wxid: str = None)
             # 记录解密原图时用上的密钥，供缩略图兜底复用
             _found_key = {'aes': None, 'xor': None}
 
+            # --- issue #46：未通过完整性校验的候选，暂存为"最后才用的兜底" -----------
+            # 背景：缓存命中即 return，而"成功"的判据只是**前 16 字节像图片**
+            # （用错 XOR 时那 16 字节来自**正确的 AES 段**）⇒ 照样 200 + 一张坏图
+            # ⇒ 后续的 MMKV 重新派生永远不执行 ⇒ 缓存里的错 XOR 永久固化。
+            # 新语义：只有 `True`/`None` 才立刻返回；`False`（可判定类型且**确认**缺尾）
+            # 暂存 + 继续，让后续步骤（MMKV 重新派生 → 内存）有机会给出通过校验的候选。
+            # ⚠️ 链走完仍没有更好的 ⇒ **回退返回**暂存的那个：绝不 404 / 500
+            # （真实缓存里 2/28 个 JPEG 是"源图本身缺尾"，用户本来就能看到）。
+            _incomplete_candidates = []
+
+            def _stash_incomplete(dec_path, mime, source_tag=None, more_steps=True):
+                """记住一个"可判定类型但确认缺尾"的候选，并**继续**尝试后续步骤。
+
+                为什么暂存**路径**而不是字节：一个候选可能就是几十 MB，而真正需要它的概率
+                很低（控制方实测真实缓存里 2/28≈7%）。
+                """
+                _incomplete_candidates.append({
+                    'path': dec_path,
+                    'mime': mime,
+                    'source_tag': source_tag,
+                    'why': _describe_incompleteness(mime),
+                })
+                _tag = f"（源={source_tag}）" if source_tag else ""
+                _tail = "暂存为兜底并**继续**尝试后续步骤" if more_steps else "暂存为兜底（候选链已走完）"
+                print(f"  [V2] 候选未通过完整性校验（解出的图不完整："
+                      f"{_describe_incompleteness(mime)}），"
+                      f"{_tail}: {os.path.basename(dec_path)}{_tag}", flush=True)
+
+            def _serve_incomplete_fallback():
+                """链走完仍没有 `True`/`None` 的候选 ⇒ 回退返回暂存的"最大"那个。
+
+                **绝不 404 / 415 / 500**：源图本身就被截断的图（真实缓存里 7%）用户本来就能
+                看到，不许因为"校验不过"而变成读不出来。宁可给一张坏的，也不能不给。
+                """
+                cand = _pick_incomplete_candidate(_incomplete_candidates)
+                if not cand:
+                    return None
+                try:
+                    _size = os.path.getsize(cand['path'])
+                except OSError:
+                    return None
+                print(f"  [V2] 所有候选都未通过完整性校验（暂存 {len(_incomplete_candidates)} 个），"
+                      f"回退返回其中最大的一个: {os.path.basename(cand['path'])} "
+                      f"({cand['why']}, {_size} 字节, 源={cand.get('source_tag') or 'cache'}) —— 不 404",
+                      flush=True)
+                resp = send_file(os.path.abspath(cand['path']), mimetype=cand['mime'],
+                                 max_age=86400)
+                resp.headers['X-WeChat-Image-Completeness'] = 'incomplete'
+                # 既有 `X-WeChat-Image-Source` 的语义（缩略图标记）不变；只在它本来为空时补上来源。
+                resp.headers['X-WeChat-Image-Source'] = (cand.get('source_tag')
+                                                         or 'v2-incomplete-fallback')
+                return resp
+
             def _serve_decrypted(dec_path, source_tag=None):
-                """按文件头给出正确 MIME 后返回响应；不是图片则返回 None。"""
+                """按文件头给出正确 MIME 后返回响应；不是图片则返回 None。
+
+                完整性校验（issue #46）：
+                  * `True`（可判定类型且尾部完整）/ `None`（不可判定）⇒ **立刻返回**（与旧行为一致）；
+                  * `False`（可判定类型且确认缺尾）⇒ **不返回**，暂存为最后兜底并返回 None，
+                    让候选链继续 —— **这正是让 MMKV 重新派生有机会接管、从而纠正缓存的那一步**。
+                """
                 try:
                     with open(dec_path, 'rb') as f:
                         head = f.read(16)
@@ -1421,6 +1717,12 @@ def serve_hardlink_media(decrypted_dir: str, media_info: dict, wxid: str = None)
                     return None
                 mime = _sniff_image_mime(head)
                 if mime == 'application/octet-stream':
+                    return None
+                # 只有"可判定类型"才值得去做校验：不可判定（WEBP/BMP/其它）连
+                # `_image_completeness` 都不调用 ⇒ 这条路上**零额外 IO**、与旧行为逐字一致。
+                if (mime in _IMAGE_DECIDABLE_MIMES
+                        and _image_completeness(dec_path, mime) is False):
+                    _stash_incomplete(dec_path, mime, source_tag)
                     return None
                 resp = send_file(os.path.abspath(dec_path), mimetype=mime, max_age=86400)
                 if source_tag:
@@ -1510,7 +1812,18 @@ def serve_hardlink_media(decrypted_dir: str, media_info: dict, wxid: str = None)
                     for _try_md5 in _md5_variants:
                         found = find_keys_for_files(decrypted_dir, wxid, [_try_md5])
                         if _try_md5 in found:
-                            rv = _try_v2_decrypt(found[_try_md5], _DAT_V2_DEFAULT_XOR)
+                            # 尾部 XOR 必须用**派生真值**（`code & 0xFF`）；只有实在拿不到
+                            # 派生值时，才回退到既有默认值。写死默认值 ⇒ 凡是
+                            # `code & 0xFF != 0xC9` 的账号，图只有上面一小部分能显示、
+                            # 其余是纯色/垃圾（issue #16 症状 2：XOR 只作用文件尾部）。
+                            _mem_xor = getattr(found, 'derived_xor', None)
+                            if _mem_xor is None:
+                                _mem_xor = _DAT_V2_DEFAULT_XOR
+                                # 只在**异常情况**（手上没有派生值）打日志：这样日志里
+                                # "NOT a derived value" 才真的等于"这次不是按账号派生的"。
+                                print(f"  [V2] 内存找到密钥但无派生 XOR —— 尾部按默认值 "
+                                      f"0x{_mem_xor:02X} 解（NOT a derived value）")
+                            rv = _try_v2_decrypt(found[_try_md5], _mem_xor)
                             if rv:
                                 return rv
 
@@ -1544,8 +1857,26 @@ def serve_hardlink_media(decrypted_dir: str, media_info: dict, wxid: str = None)
             local_id = media_info.get('local_id', 0) if media_info else 0
             thumb = _find_cached_thumbnail(decrypted_dir, md5_val, local_id, wxid)
             if thumb and os.path.isfile(thumb):
-                mime, _ = mimetypes.guess_type(thumb)
-                return send_file(thumb, mimetype=mime or 'image/jpeg', max_age=86400)
+                try:
+                    with open(thumb, 'rb') as _tf:
+                        _thumb_mime = _sniff_image_mime(_tf.read(16))
+                except OSError:
+                    _thumb_mime = 'application/octet-stream'
+                # 与上面同一条语义：只跳过"可判定类型且**确认**缺尾"的缩略图；
+                # 不可判定（WEBP/BMP/读不到）⇒ 保持旧行为，直接返回（连校验都不调用）。
+                if (_thumb_mime in _IMAGE_DECIDABLE_MIMES
+                        and _image_completeness(thumb, _thumb_mime) is False):
+                    _stash_incomplete(thumb, _thumb_mime, 'thumbnail-cache', more_steps=False)
+                else:
+                    mime, _ = mimetypes.guess_type(thumb)
+                    return send_file(thumb, mimetype=mime or 'image/jpeg', max_age=86400)
+
+            # 4b) issue #46：候选链走完仍**没有**任何通过校验的候选
+            #     ⇒ 回退返回暂存的"最大"那个未校验候选。绝不 404 / 415 / 500：
+            #     真实缓存里 2/28 个 JPEG 是"源图本身就被截断"，用户本来就能显示它们。
+            _rv_incomplete = _serve_incomplete_fallback()
+            if _rv_incomplete:
+                return _rv_incomplete
 
             # Diagnostic: report why this image failed
             diag_parts = [os.path.basename(resolved)]

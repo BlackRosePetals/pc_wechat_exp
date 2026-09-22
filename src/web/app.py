@@ -56,9 +56,13 @@ def create_app(decrypted_dir: str, wxid: str = None, db_dir: str = None) -> Flas
         template_folder=_resolve_path('templates'),
         static_folder=_resolve_path('static'),
     )
-    from engine.services.media import _detect_wxid
+    from engine.services.media import resolve_account_dir
     app.config['DECRYPTED_DIR'] = decrypted_dir
-    app.config['WXID'] = wxid or _detect_wxid(decrypted_dir)
+    # issue #16：这里**不能**再写 `wxid or _detect_wxid(...)` ——
+    # 配置里持久化的账号名可能是个**不存在**的值（用户实测是 `"output"`，多半是备份输出目录名泄漏进去的），
+    # 它是 truthy 的，于是自动检测根本不会跑，而接下来每一次媒体解析都会以它拼路径 ⇒
+    # **图片/文件 0 命中且不报错**。`resolve_account_dir` 只在**校验出真实目录**时才替换它。
+    app.config['WXID'] = resolve_account_dir(decrypted_dir, wxid)
     app.config['DB_DIR'] = db_dir
     app.config['APP_VERSION'] = __version__
     app.json.ensure_ascii = False
