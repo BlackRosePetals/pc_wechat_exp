@@ -55,6 +55,23 @@ def _dir_hint():
     except Exception:
         return "未找到微信数据目录。请在微信「设置 → 文件管理」查看数据目录，或手动填写。"
 
+
+def _export_dir():
+    """密钥清单的落盘目录：非冻结 = <仓库根>/output，冻结 = <exe 目录>/output。
+
+    单独抽成模块级函数，是为了给「导出目录怎么算」留一条**生产路径本身就在用**的缝：
+    测试 monkeypatch 它即可把落盘重定向到临时目录，从而不再污染仓库真实 output/
+    （known-issues #41：合成导出与真实导出同名同格式同目录，会让 output/ 无法审计）。
+
+    默认行为与原实现逐字一致，禁止改动这两条分支的语义。
+    """
+    if getattr(sys, "frozen", False):
+        data_root = os.path.dirname(sys.executable)
+    else:
+        data_root = os.path.normpath(os.path.join(_BASE, ".."))
+    return os.path.join(data_root, "output")
+
+
 def _detect_dirs(mode="auto"):
     """列出微信数据目录。
 
@@ -289,12 +306,8 @@ def keys_export():
         return jsonify({"error": "empty_input", "message": "没有解析到任何密钥行"}), 400
 
     # 默认写到 output/（已被 .gitignore 忽略），避免密钥文件进版本库
-    if getattr(sys, "frozen", False):
-        data_root = os.path.dirname(sys.executable)
-    else:
-        data_root = os.path.normpath(os.path.join(_BASE, ".."))
     fname = "keys_export_%s.txt" % datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_path = os.path.join(data_root, "output", fname)
+    out_path = os.path.join(_export_dir(), fname)
     try:
         res = export_key_list(db_dir, entries, out_path)
     except Exception as e:
