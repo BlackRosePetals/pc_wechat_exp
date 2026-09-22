@@ -1781,7 +1781,13 @@ def serve_hardlink_media(decrypted_dir: str, media_info: dict, wxid: str = None)
                 from engine.services.v2_key_extract import extract_keys_from_mmkv
                 try:
                     mmkv_keys = extract_keys_from_mmkv(decrypted_dir, wxid)
-                    if mmkv_keys:
+                    # `extract_keys_from_mmkv` 的**发现语义没变**：返回的仍然只是"本次新发现的
+                    # md5 集合"。但它在**离线**状态下还会顺手把缓存里写坏的 XOR 就地纠正
+                    # （known-issues #46 残留：微信没在跑也要能自愈），这时返回值是**空集合**
+                    # （稳态下本来就没有新文件可发现）⇒ 不能只看 `mmkv_keys` 的真假：
+                    # 否则内存里那份**旧的** key_map（带着那条错 XOR）会继续赢，
+                    # 整个进程都看不到修复结果（下一次请求又会拿旧值去解）。
+                    if mmkv_keys or getattr(mmkv_keys, 'cache_repaired', 0):
                         # extract_keys_from_mmkv already caches to _media_keys.json
                         # Invalidate in-memory cache so reload picks up new keys
                         global _IMAGE_KEY_MAP, _IMAGE_KEY_MAP_DIR

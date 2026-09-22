@@ -985,11 +985,16 @@ class FoundV2Keys(dict):
     继承 ``dict`` 是刻意的**向后兼容**选择：既有调用方的 ``found[md5]`` / ``in`` /
     ``len`` / ``dict(found)`` 语义逐字不变；只有需要尾部 XOR 的调用方才读
     ``derived_xor``（拿不到时为 ``None``，由调用方回退默认值）。
+    ``cache_repaired`` 是**额外的可观测面**，不参与"发现了哪些密钥"的语义：
+    它记录这次调用顺手纠正了几条**已经缓存**的坏条目（``0`` = 一条都没动）。
+    MMKV 路径在"所有 V2 文件都已缓存"的稳态下（= issue #46 的现场）返回值仍是**空集合**，
+    调用方只能靠这个字段知道"缓存被修过了、内存里那份 key_map 得重读"。
     """
 
-    def __init__(self, *args, derived_xor=None, **kwargs):
+    def __init__(self, *args, derived_xor=None, cache_repaired=0, **kwargs):
         super().__init__(*args, **kwargs)
         self.derived_xor = derived_xor
+        self.cache_repaired = cache_repaired
 
 
 def _same_xor(raw, xor_key: int) -> bool:
@@ -1055,6 +1060,100 @@ def _merge_into_cache(decrypted_dir, new_keys, xor_key=None):
               f"— xor source = {_src}", flush=True)
 
     return added
+
+
+def _repair_cached_xor(decrypted_dir, xor_key, aes_key=None) -> int:
+    """修复通道：把**已经缓存**条目里与"已验证真值"不等的 ``xor_key`` **就地纠正**。
+
+    为什么需要它（known-issues #46 的残留）
+    --------------------------------------
+    ``_merge_into_cache`` 的纠正分支**只覆盖 ``new_keys`` 里出现过的 md5**
+    （实现就是 ``for md5_val, aes_key in new_keys.items()``）。而 MMKV 路径的
+    ``pending`` 明确排除**已经缓存**的 md5 ⇒ 只靠那一次 merge，**永远**纠正不到
+    "已经写坏、又已经缓存"的那条条目 —— 而那正是 issue #46 现场（老版本写死的 0xC9
+    已经落盘）；缓存命中还会短路掉后续所有推导 ⇒ 错值永久固化。
+    本函数补的就是这个差集，且**完全独立于发现语义**：不改 ``pending``、不改
+    ``found_all``、不改返回值里"发现了哪些 md5"。
+
+    ⚠️ 与内存路径的分工：
+      * **内存路径**（``find_keys_for_files``）对"被请求的 md5"生效、**需要微信在运行**；
+      * **本通道**只用本机 MMKV 里派生并用**真文件**验证过的账号级值，
+        **不需要微信在运行** —— 这正是"微信没在跑也要能自愈"的唯一抓手。
+
+    安全边界（三条，缺一不可）
+    --------------------------
+    1. 只在 ``xor_key`` 是**已验证真值**时被调用（调用方保证）；这里不猜任何值，
+       也**绝不**写 ``media._DAT_V2_DEFAULT_XOR``；
+    2. 只改 ``xor_key`` 字段 —— ``aes_key`` 是另一个维度的数据，本通道没有重新"发现"密钥；
+    3. 只动 ``aes_key`` 与本次用真文件验证过的账号密钥**一致**的条目：``xor_key`` 是
+       **账号级**属性，只有条目确实属于本账号时"改成真值"才是确定的。归属不明的条目
+       （``aes_key`` 不同，可能是别的账号/别的实验留下的）**不动**并在日志里报出来 ——
+       改错会把本来能显示的图改坏。
+
+    幂等：值已经相等的条目直接跳过；一条都不需要改时**不碰文件**（不重写，mtime 不变）。
+
+    Returns: 实际被纠正的条目数（``0`` = 一条都没动）。
+    """
+    import json
+    keys_file = os.path.join(decrypted_dir, '_media_keys.json')
+    truth = int(xor_key) & 0xFF
+
+    try:
+        if not (os.path.isfile(keys_file) and os.path.getsize(keys_file) > 0):
+            print(f"[mmkv] 缓存修复通道: 没有缓存文件（{os.path.basename(keys_file)}）"
+                  f"⇒ 不动", flush=True)
+            return 0
+        with open(keys_file, 'r', encoding='utf-8') as f:
+            existing = json.load(f)
+    except Exception as e:
+        print(f"[mmkv] 缓存修复通道: 缓存读不出来（{e}）⇒ 不动", flush=True)
+        return 0
+
+    md5_keys = existing.get('md5_keys') or {}
+    if not isinstance(md5_keys, dict):
+        print("[mmkv] 缓存修复通道: md5_keys 结构异常 ⇒ 不动", flush=True)
+        return 0
+
+    wanted_aes = aes_key.hex().lower() if aes_key else None
+    payload = {}
+    unowned = 0
+    for md5_val, entry in md5_keys.items():
+        if not isinstance(entry, dict):
+            continue
+        if _same_xor(entry.get('xor_key'), truth):
+            continue                      # 幂等：值已经是对的 ⇒ 跳过（不重写）
+        if wanted_aes is not None and str(entry.get('aes_key') or '').lower() != wanted_aes:
+            unowned += 1                  # 归属不明 ⇒ 保守不动
+            continue
+        try:
+            payload[md5_val] = bytes.fromhex(entry['aes_key'])
+        except (KeyError, ValueError, TypeError):
+            unowned += 1
+            continue
+
+    tail = (f"；另有 {unowned} 条归属不明（aes_key 与本次用真文件验证过的账号密钥不同）"
+            f"**不动**") if unowned else ""
+
+    if not payload:
+        print(f"[mmkv] 缓存修复通道: 无需修复 —— {len(md5_keys)} 条已缓存条目的 xor_key "
+              f"都已是 0x{truth:02x}（幂等，未写盘）{tail}", flush=True)
+        return 0
+
+    # 复用 `_merge_into_cache(..., xor_key=真值)` 的既有纠正能力：这些 md5 **已经在缓存里**，
+    # 它对已存在的条目**只改 `xor_key`、不动 `aes_key`**（就是它的既有纠正分支）。
+    _merge_into_cache(decrypted_dir, payload, xor_key=truth)
+
+    fixed = len(payload)
+    try:
+        with open(keys_file, 'r', encoding='utf-8') as f:
+            after = json.load(f).get('md5_keys') or {}
+        fixed = sum(1 for m in payload if _same_xor((after.get(m) or {}).get('xor_key'), truth))
+    except Exception:
+        pass
+
+    print(f"[mmkv] 缓存修复通道: 已就地纠正 {fixed} 条已缓存条目的 xor_key → 0x{truth:02x}"
+          f"（**不需要微信在运行**）{tail}", flush=True)
+    return fixed
 
 
 def is_wechat_running():
@@ -1157,7 +1256,7 @@ def _clean_wxid(wxid: str) -> str:
 
 
 def extract_keys_from_mmkv(decrypted_dir: str, wxid: str = None) -> dict:
-    """Extract V2 AES keys from local MMKV statistic files (no WeChat process needed).
+    """Extract V2 AES keys from local MMKV statistic files (**no WeChat process needed**).
 
     Scans %APPDATA%\\Tencent\\xwechat\\**\\kvcomm\\ for key_*_.statistic files,
     derives per-account AES/XOR keys, and tests them against V2 ciphertexts in
@@ -1166,12 +1265,29 @@ def extract_keys_from_mmkv(decrypted_dir: str, wxid: str = None) -> dict:
     This is the py_wx_key approach — purely offline, local file-based key
     derivation. No WeChat process or memory scanning required.
 
+    ⚠️ 与内存路径的分工（issue #46 的残留修复点）
+    --------------------------------------------
+    * **本函数（离线）**：只要本机 `%APPDATA%` 里还有 `kvcomm\\key_*_.statistic`，
+      并且备份里还有 **V2 密文**可用于验证，就能独立得出"账号级 XOR 真值"。
+      **不需要微信在运行**，因此它是"微信没在跑时也要能自愈"的唯一抓手。
+    * **内存路径**（``find_keys_for_files`` → ``_merge_into_cache(..., xor_key=…)``）：
+      需要 `Weixin.exe` 在运行，对**被请求的 md5** 生效（与缓存里有没有它无关）。
+
+    本函数除了"发现新密钥"，还会在拿到**已验证真值**时顺手把**已经缓存**的坏条目纠正
+    （见 :func:`_repair_cached_xor`）—— 这正是此前缺的那一块：``pending`` 排除了已缓存的
+    md5 ⇒ 老版本写死 0xC9 落盘后**永远**不会被改回来。
+    **发现语义与产出集合逐字不变**：``pending`` 的算法不变，返回的仍然只是
+    "本次**新发现**的 md5 集合"（修复通道不往返回值里塞任何 md5）。
+
     Args:
         decrypted_dir: path to decrypted backup directory
         wxid: WeChat user ID (auto-detected if None)
 
     Returns:
-        dict: {md5: key_bytes} for all newly found keys
+        FoundV2Keys: ``{md5: key_bytes}``（= 本次**新发现**的密钥；稳态下为空 dict），
+        并附带 ``derived_xor``（本次用真文件验证过的账号级 XOR 真值；拿不到时为 ``None``）
+        与 ``cache_repaired``（本次顺手纠正了几条已缓存条目；``0`` = 一条都没动）。
+        它继承 ``dict`` ⇒ 既有 ``found[md5]`` / ``in`` / ``len`` / ``dict(found)`` 语义不变。
     """
     if wxid is None:
         wxid = os.path.basename(os.path.dirname(decrypted_dir))
@@ -1257,20 +1373,41 @@ def extract_keys_from_mmkv(decrypted_dir: str, wxid: str = None) -> dict:
         pass
 
     pending = {md5: v for md5, v in tasks.items() if md5 not in existing_md5s}
-    if not pending:
-        print("[mmkv] All V2 keys already cached", flush=True)
+
+    # ⚠️ 这里**不再**在 `pending` 为空时提前 return（known-issues #46 的残留）。
+    # 已缓存的 md5 不进 pending ⇒ 一旦缓存里的 `xor_key` 被写坏（老版本写死的 0xC9），
+    # 提前 return 会让它**永远**不被纠正 —— 而这条路径是**离线**的（不需要微信在运行），
+    # 正是"微信没在跑也想自愈"唯一的抓手。
+    # 改动后的语义：**发现**仍然只做 pending 那一套（产出集合不变），
+    # 但顺手把**已缓存**的条目按"已验证真值"就地纠正（见 `_repair_cached_xor`）。
+    cache_repair_only = not pending
+    if cache_repair_only:
+        print("[mmkv] All V2 keys already cached — 改走**缓存修复通道**"
+              "（本路径不需要微信在运行）", flush=True)
+
+    # 验证样本池：
+    #   * 有未缓存文件 ⇒ 用 `pending` 的前 5 个（**逐字保持**历史行为）；
+    #   * 全是已缓存的稳态 ⇒ 退回到 `tasks` 里的**已缓存**文件当样本。它们同样是本备份
+    #     目录里的真 V2 密文，"这把 AES 能不能解开本账号的图"的验证能力完全等价。
+    # ⚠️ 绝不能让样本池为空：`match_count == len(sample_md5s) == 0` 会让**每一个**候选都
+    #     "验证通过" ⇒ 写出一个从没被验证过的 XOR（那正是本任务明令禁止的"猜"）。
+    sample_pool = tasks if cache_repair_only else pending
+    sample_md5s = list(sample_pool.keys())[:5]
+    if not sample_md5s:
+        print("[mmkv] No V2 file available for verification", flush=True)
         return {}
 
     # Sample up to 5 files for verification; if the key works on these,
     # it works for ALL files (per-account key, not per-image).
-    sample_md5s = list(pending.keys())[:5]
     verified_codes = set()
     verified_xor = None
+    verified_code = None
+    verified_aes = None
 
     for xor_key, aes_key, code in candidates:
         match_count = 0
         for md5 in sample_md5s:
-            fmt = _try_key(aes_key, pending[md5][1])
+            fmt = _try_key(aes_key, sample_pool[md5][1])
             if fmt:
                 match_count += 1
         if match_count == len(sample_md5s):
@@ -1278,6 +1415,8 @@ def extract_keys_from_mmkv(decrypted_dir: str, wxid: str = None) -> dict:
                   flush=True)
             verified_codes.add(code)
             verified_xor = xor_key
+            verified_code = code
+            verified_aes = aes_key
             # Cache for ALL pending files (not just the sample)
             for md5 in pending:
                 found_all[md5] = aes_key
@@ -1287,25 +1426,44 @@ def extract_keys_from_mmkv(decrypted_dir: str, wxid: str = None) -> dict:
                   flush=True)
             verified_codes.add(code)
             verified_xor = xor_key
+            verified_code = code
+            verified_aes = aes_key
             for md5 in pending:
                 found_all[md5] = aes_key
             break
         else:
             print(f"[mmkv] Code {code} no match on sample files", flush=True)
 
+    # XOR 与 AES 是**同一个 code** 派生的（`code & 0xFF`）：AES 在**真文件**上验证通过
+    # ⇒ 这个 code 就是本账号的 ⇒ 派生出的 XOR 是**真值**，可以登记（供后续内存扫描 /
+    # 缓存修复复用），也可以用来纠正缓存。拿不到真值时**绝不**登记、更不写默认值。
+    if verified_xor is not None:
+        _record_derived_xor(decrypted_dir, verified_xor)
+        print(f"[mmkv] 已验证的派生 XOR = 0x{verified_xor & 0xFF:02x}"
+              f"（code={verified_code}）—— 已登记，供后续内存扫描 / 缓存修复复用",
+              flush=True)
+
     if found_all:
         print(f"[mmkv] Success! Account key derived locally — cached for {len(found_all)} files",
               flush=True)
-        # XOR 与 AES 是同一个 code 派生的（`code & 0xFF`）：AES 验证通过就意味着
-        # 账号对上了，此时必须把派生真值落盘，而不是写死 0xC9（issue #16 症状 2）。
-        if verified_xor is not None:
-            _record_derived_xor(decrypted_dir, verified_xor)
         _merge_into_cache(decrypted_dir, found_all, xor_key=verified_xor)
-    else:
+    elif verified_xor is None:
         print("[mmkv] No keys matched — account may use different wxid or codes",
               flush=True)
+    else:
+        # 验上了，但没有任何未缓存的文件 ⇒ 这次不是"发现"，只是"修复"（别再喊"没匹配上"）。
+        print(f"[mmkv] 密钥已用真文件验证通过（code={verified_code}），"
+              f"本次没有未缓存的文件需要发现", flush=True)
 
-    return found_all
+    # --- 修复通道（与"发现语义"分离的独立开关）---
+    repaired = 0
+    if verified_xor is None:
+        print("[mmkv] 未取得**已验证**的派生 XOR ⇒ 本次**不动**缓存"
+              "（绝不猜、绝不写默认值）", flush=True)
+    else:
+        repaired = _repair_cached_xor(decrypted_dir, verified_xor, aes_key=verified_aes)
+
+    return FoundV2Keys(found_all, derived_xor=verified_xor, cache_repaired=repaired)
 
 
 # ---------------------------------------------------------------------------
