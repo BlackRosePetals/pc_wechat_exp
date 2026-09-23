@@ -9,6 +9,9 @@ from engine.parsers import PARSERS
 from engine.parsers import types as _  # trigger parser registration
 from engine.services.emoji_map import translate_wechat_emoji
 from engine.services.name_resolver import resolve_wxid, pick_display_name as _pick_display_name
+from engine.services.sender_model import (ShardSenderModel as _sender_model, load_name2id,
+                                          SIDE_ME, SIDE_OTHER, SIDE_SYSTEM, SIDE_UNKNOWN,
+                                          SOURCE_NAME2ID)
 from engine.services.message.media_resolve import (
     _resolve_media_from_proto, _lookup_resource_file_name,
     _resolve_voice_path, _scan_filesystem_for_media, _resolve_via_resource_db,
@@ -214,8 +217,22 @@ def _find_all_chat_dbs(decrypted_dir: str, chat_id: str) -> list:
     return result
 
 
-def _build_where(start_date, end_date, msg_types, sender, keyword, is_group=False):
-    """Build WHERE clause and params list for WeChat 4.x Msg_ table columns."""
+def _build_where(start_date, end_date, msg_types, sender, keyword, is_group=False,
+                 own_wxid=None):
+    """Build WHERE clause and params list for WeChat 4.x Msg_ table columns.
+
+    `sender` 的取值约定（**与前端下拉的 key 一一对应**，见 `get_chat_stats`）：
+
+    * ``'__self__'``  —— 本人（`origin_source == 1` **或** Name2Id 指到本人 id 形态）
+    * ``'__sys__'``   —— 系统消息（`local_type ∈ {10000,10002}`）
+    * ``'__unknown__'`` —— 该分片 `Name2Id` 里没有这个 rsid（归属未定）
+    * 其它非空值 —— 当作**具体某个人的 wxid**：用同库的
+      ``real_sender_id IN (SELECT rowid FROM Name2Id WHERE user_name = ?)`` 精确匹配。
+      ⚠️ 这是 issue #16 之后新增的能力：旧实现用
+      ``message_content LIKE 'wxid:\\n%'``，对**没有正文前缀的媒体消息**
+      （图片/语音/文件）**永远筛不出来** ⇒ 用户看到的"选某人却少了一批消息"。
+      每个分片都有自己的 `Name2Id`，子查询因此天然**按分片生效**，无需逐分片拼 SQL。
+    """
     clauses = ['create_time > 1000000000']
     params = []
 
@@ -244,15 +261,33 @@ def _build_where(start_date, end_date, msg_types, sender, keyword, is_group=Fals
             clauses.append(f"(local_type & {_LOCAL_TYPE_MASK}) IN ({placeholders})")
             params.extend(types)
     if sender:
+        own_forms = sorted(_own_id_forms(own_wxid)) if own_wxid else []
         if sender == '__self__':
-            clauses.append('origin_source = 1')
+            if own_forms:
+                marks = ','.join('?' for _ in own_forms)
+                clauses.append(
+                    '(origin_source = 1 OR real_sender_id IN '
+                    '(SELECT rowid FROM Name2Id WHERE user_name IN (%s)))' % marks)
+                params.extend(own_forms)
+            else:
+                clauses.append('origin_source = 1')
         elif sender == '__sys__':
             clauses.append(f'(local_type & {_LOCAL_TYPE_MASK}) IN (10000, 10002)')
-        elif is_group:
-            clauses.append('message_content LIKE ? ESCAPE \'\\\'')
-            params.append(f'{_escape_like(sender)}:\\n%')
+        elif sender == '__unknown__':
+            # 与 `sender_model.classify()` 的兜底档**同口径**：该分片 `Name2Id` 里没有
+            # 这个 rsid、`origin_source != 1`、也不是系统类型（那三类模型已分别归到
+            # me / system）。⚠️ 内容级证据（zstd 里的 fromusername / 前缀）在 SQL 里
+            # 看不出来，所以极少数"有内容证据"的行也会落进这个桶（本机全量 28 行）
+            # —— 这个桶是**诊断用**的，不参与"谁发的"判定本身。
+            clauses.append(
+                'real_sender_id NOT IN (SELECT rowid FROM Name2Id)'
+                ' AND origin_source != 1'
+                f' AND (local_type & {_LOCAL_TYPE_MASK}) NOT IN (10000,10002)')
         else:
-            clauses.append('origin_source != 1')
+            # 具体某个人：按 `Name2Id` 精确匹配（群聊/单聊同一条路径）
+            clauses.append(
+                'real_sender_id IN (SELECT rowid FROM Name2Id WHERE user_name = ?)')
+            params.append(sender)
     if keyword:
         clauses.append("message_content LIKE ? ESCAPE \'\\\'")
         params.append(f'%{_escape_like(keyword)}%')
@@ -435,7 +470,112 @@ def _extract_xml_bytes(content_bytes: bytes, ltype: int) -> bytes:
     return best_xml
 
 
-def _row_to_message(row, chat_id: str, decrypted_dir: str = '', parse_xml: bool = True, sender_map: dict = None, wxid_name_cache: dict = None, own_wxid: str = None) -> dict:
+# ---------------------------------------------------------------------------
+# 内容级「发送者证据」（GitHub issue #16 新评论：单聊里对方的消息被显示成"我"）
+# ---------------------------------------------------------------------------
+# 症状与机制（本机真实数据实测，见会话报告）：
+#   * `_row_to_message` 的单聊兜底里有一条**无证据的默认判定**：
+#     `sender_map` 非空但这一行的 `real_sender_id` 不在表里 ⇒ 直接认定"是我发的"。
+#   * 语音(34)/文件·引用(49)/表情(47) 这类消息**没有 `sender:\n` 正文前缀**，
+#     正文判定帮不上忙，于是**对方的这些消息被标成"我"**（本机 968 条可判定行里 42 条，
+#     4.3%；chat_id 不带 `wxid_` 前缀的会话里 6.1%，是 `wxid_` 会话的两倍以上）。
+#   * 反过来也有错：本机 681 条可判定"确实是本人发的"行里有 49 条（7.2%）被标成对方。
+# 修法：**先看内容里的硬证据**（下面两个），有证据就以证据为准；没有证据才退回既有的
+# rsid/启发式那一套（**行为逐字不变**）——因为"没有证据"的那些行无法用数据判对错，
+# 悄悄翻转它们只会把错误换个方向（本机实测：两种默认值在 13546 条无证据行上分歧 756 条，
+# 无法评分）。**没有证据时"猜"仍然是猜，只是不再覆盖有证据的结论。**
+
+# 引用块：`<refermsg>`/`<refer>` 里的 fromusername 是**被引用那条消息**的发送者。
+# 不剥掉它，会把"我引用他的话"判成"他发的"。
+_REFER_BLOCK_RE = re.compile(r'<(?:refermsg|refer)\b.*?</(?:refermsg|refer)\s*>',
+                             re.IGNORECASE | re.DOTALL)
+_FROMUSERNAME_RE = re.compile(
+    r'fromusername\s*=\s*"([^"]*)"|<fromusername>([^<]*)</fromusername>',
+    re.IGNORECASE)
+
+
+def _payload_fromusername_values(content):
+    """取**本条消息自身**的 `fromusername` 取值集合（引用块里的不算）。
+
+    返回 `set`（可能是空集 = payload 里没有这个字段，例如图片/系统消息）。
+    """
+    if isinstance(content, bytes):
+        try:
+            text = content.decode('utf-8', errors='replace')
+        except Exception:
+            return set()
+    elif isinstance(content, str):
+        text = content
+    else:
+        return set()
+    if not text or 'fromusername' not in text.lower():
+        return set()
+    stripped = _REFER_BLOCK_RE.sub('', text)
+    values = set()
+    for m in _FROMUSERNAME_RE.finditer(stripped):
+        val = m.group(1) if m.group(1) is not None else m.group(2)
+        val = (val or '').strip()
+        if val:
+            values.add(val)
+    return values
+
+
+def _own_id_forms(own_wxid):
+    """本人 id 的**可接受形式**集合（只用于比较，多一个不存在的值无害）。
+
+    `own_wxid` 实测是**账号目录名**（`app.config['WXID']`），而消息 payload 里的
+    `fromusername` 是**裸 id**；自定义微信号的目录名还形如 `<微信号>_68f8`。
+    ⇒ 用 `utils.account_id_candidates()` 展开成多种形态再比较
+    （它同时覆盖 `bare_wxid` 与"去 `_<4hex>` 后缀"两种规则）。
+
+    ⚠️ 这里**只做比较**：这些形态绝不许拿去拼路径（见 `utils` 里那段说明）。
+    """
+    forms = set()
+    try:
+        from engine.utils import account_id_candidates
+        forms.update(account_id_candidates(own_wxid))
+    except Exception:
+        pass
+    if own_wxid:
+        forms.add(str(own_wxid).strip())
+    forms.discard('')
+    return forms
+
+
+def _content_sender_evidence(content, chat_id, own_forms):
+    """单聊里的**内容级发送者证据**：`'self'` / `'other'` / `None`（判不了）。
+
+    只用两种硬证据，都来自内容本身：
+      ① 正文以 `X:\\n` 开头 —— 微信给**收到的**消息加发送者前缀，自己发的不加；
+         `X` 是本人的任一形态 ⇒ 自己发的（转发自己的消息等），否则 ⇒ 对方发的。
+      ② payload 里**本条消息自身**的 `fromusername`：等于 `chat_id`（单聊里
+         `chat_id` 就是对方）⇒ 对方发的；等于本人任一形态 ⇒ 自己发的。
+         两者同时出现（引用/转发混合）⇒ **不判**，交回既有启发式。
+
+    ⚠️ **只用于单聊**：群聊的 `chat_id` 是群 id、`fromusername` 是群成员，
+    语义不同，本函数不适用（调用点已限制）。
+    """
+    if not content:
+        return None
+    if isinstance(content, str):
+        pos = content.find(':\n')
+        if 0 < pos <= 30:
+            prefix = _clean_sender_prefix(content[:pos])
+            if prefix:
+                return 'self' if prefix in own_forms else 'other'
+    values = _payload_fromusername_values(content)
+    if not values:
+        return None
+    has_chat = str(chat_id) in values
+    has_own = bool(values & own_forms)
+    if has_chat and not has_own:
+        return 'other'
+    if has_own and not has_chat:
+        return 'self'
+    return None
+
+
+def _row_to_message(row, chat_id: str, decrypted_dir: str = '', parse_xml: bool = True, sender_map: dict = None, wxid_name_cache: dict = None, own_wxid: str = None, name2id: dict = None) -> dict:
     """Convert a Msg_ table row to the API message dict.
 
     Column order: local_id, local_type, origin_source, create_time, status,
@@ -482,14 +622,33 @@ def _row_to_message(row, chat_id: str, decrypted_dir: str = '', parse_xml: bool 
     is_sender = (origin == 1)
     is_group = chat_id.endswith('@chatroom')
 
-    # Fallback sender detection for 1-on-1 chats when origin_source is unreliable.
-    # In WeChat 4.x, origin_source is rarely 1 even for self-sent messages.
-    # Received text messages have a "sender_wxid:\n" prefix; self-sent ones do NOT.
-    # The sender_map is built from prefixed messages, so in a 1-on-1 chat it only
-    # contains the OTHER person's rsid. An rsid NOT in a non-empty sender_map
-    # therefore belongs to us (self-sent).
-    if not is_group and not is_sender:
-        if isinstance(content, str) and ':\n' in content[:100]:
+    # ===== 权威判定（Name2Id）=================================================
+    # `name2id`（分片级 Name2Id 映射）由调用方传入时，**以它为准**：
+    #   * 与内容级证据交叉验证 234,299 行 → 一致率 **99.956%**；
+    #   * 单聊内部一致性（不依赖内容）：名字只落在 {本人, chat_id}，第三方为 0；
+    #   * 同真值对照：旧规则错判 1.13% → 本方法 **0.056%**（178,759 行实测）。
+    # 详见 `engine/services/sender_model.py` 的模块说明。
+    _model = None
+    _side = _src = _member = None
+    if name2id is not None and own_wxid:
+        _model = _sender_model(name2id, chat_id, own_wxid)
+        _side, _src, _member = _model.classify(real_sender_id, origin, content,
+                                               local_type=ltype)
+        is_sender = (_side == SIDE_ME)
+
+    # issue #16 新评论：**内容级证据优先**（没有 Name2Id 映射时的路径，详见
+    # `_content_sender_evidence` 的说明）。
+    # 位置刻意放在这里：
+    #   * `origin == 1`（微信自己说"这条是本机发的"）**保持最高优先级**，行为不变；
+    #   * 只有单聊走这条路（群聊的 chat_id/fromusername 语义不同）；
+    #   * 有证据 ⇒ 以证据为准（这同时修掉两个方向的错：对方的语音/文件被标成"我"、
+    #     以及本人消息被标成对方）；
+    #   * **没有证据 ⇒ 逐字退回**下面那套既有启发式（不做无法验证的翻转）。
+    if _model is None and not is_group and not is_sender:
+        _evidence = _content_sender_evidence(content, chat_id, _own_id_forms(own_wxid))
+        if _evidence is not None:
+            is_sender = (_evidence == 'self')
+        elif isinstance(content, str) and ':\n' in content[:100]:
             parts = content.split(':\n', 1)
             cs = _clean_sender_prefix(parts[0])
             if cs and own_wxid and cs == own_wxid:
@@ -506,6 +665,12 @@ def _row_to_message(row, chat_id: str, decrypted_dir: str = '', parse_xml: bool 
                 # In 1-on-1 chats, only the other person's messages carry the
                 # "sender_wxid:\n" prefix, so sender_map only maps their rsid.
                 # Any rsid NOT in sender_map must be our own.
+                # ⚠️ **这是无证据的默认判定**（issue #16 新评论的根因）：
+                # 本机实测它会把"对方的语音/文件/引用"判成"我"（968 条可判定行里 42 条），
+                # 也会把"我发的"判成对方（49/681）。上面那条内容级证据会**先**拦下
+                # 绝大多数此类行；真正走到这里的是**没有任何内容证据**的行
+                # （图片 / 无前缀文本 / 系统消息），两种默认值在这批行上无法用数据判对错
+                # ⇒ 这里**保持历史行为**，不悄悄翻转。
                 is_sender = True
             # else: wxid_from_map exists but != own_wxid and != '__self__' → from other person
         else:
@@ -529,6 +694,9 @@ def _row_to_message(row, chat_id: str, decrypted_dir: str = '', parse_xml: bool 
     # Extract sender prefix for group messages: "sender:\nactual_content"
     if is_sender:
         sender_name = '我'
+    elif _model is not None and _side == SIDE_SYSTEM:
+        # 系统提示（撤回/入群/拍一拍…）——不属于任何个人
+        sender_name = '系统消息'
     elif is_group:
         sender_name = chat_id
     else:
@@ -550,8 +718,13 @@ def _row_to_message(row, chat_id: str, decrypted_dir: str = '', parse_xml: bool 
     # Resolve sender name for group chats
     sender_wxid = None
     if is_group and not is_sender:
-        if ltype in (10000, 10002):  # System notifications — not attributed to a person
-            sender_name = '系统消息'
+        if ltype in (10000, 10002) or (_model is not None and _side == SIDE_SYSTEM):
+            sender_name = '系统消息'      # System notifications — not attributed to a person
+        elif _model is not None and _member:
+            # Name2Id 直接给出发言人 wxid（权威）⇒ 用它解析显示名/头像
+            sender_wxid = _member
+            sender_name = (_model.member_label(_member, decrypted_dir, wxid_name_cache)
+                           or _member)
         else:
             sender_name = _resolve_sender_name(decrypted_dir, real_sender_id, content_sender, sender_map, wxid_name_cache)
             # Derive sender_wxid for avatar URL
@@ -648,6 +821,11 @@ def _row_to_message(row, chat_id: str, decrypted_dir: str = '', parse_xml: bool 
         'is_sender': is_sender,
         'sender_name': sender_name,
         'sender_wxid': sender_wxid,
+        # 归属的可解释面（`sender_model`）：`me` / `other` / `system` / `unknown`
+        # 与判定依据（`name2id` / `fromusername` / `prefix` / `origin` / `system` / `none`）。
+        # 旧调用方只看 `is_sender` 也完全兼容（`is_sender == (sender_side == 'me')`）。
+        'sender_side': _side if _model is not None else ('me' if is_sender else 'other'),
+        'sender_evidence': _src if _model is not None else None,
         'content': content,
         'content_raw': content_raw,
         'create_time': create_time,
@@ -919,18 +1097,23 @@ def query_messages(decrypted_dir: str, chat_id: str, wxid: str = None,
         raise FileNotFoundError(f"no message_*.db found for chat {chat_id}")
 
     is_group = chat_id.endswith('@chatroom')
-    where_clause, params = _build_where(start_date, end_date, msg_types, sender, keyword, is_group)
+    where_clause, params = _build_where(start_date, end_date, msg_types, sender, keyword,
+                                        is_group, own_wxid=wxid)
 
     # Build per-DB sender_maps. real_sender_id is a per-chat member index that
     # differs between WeChat DB shards, so each DB needs its own mapping.
+    # 同时加载该分片的 `Name2Id`（**权威** sender 来源，见 `engine/services/sender_model.py`）。
     db_sender_maps = {}
+    db_name2id = {}
     for db_path, table_name in all_dbs:
         try:
             conn = sqlite3.connect(db_path)
             db_sender_maps[db_path] = _build_sender_map(conn, table_name, own_wxid=wxid, chat_id=chat_id)
+            db_name2id[db_path] = load_name2id(conn)
             conn.close()
         except sqlite3.Error:
             db_sender_maps[db_path] = {}
+            db_name2id[db_path] = {}
 
     # Per-request cache for wxid → display_name lookups
     wxid_name_cache = {}
@@ -1007,7 +1190,7 @@ def query_messages(decrypted_dir: str, chat_id: str, wxid: str = None,
         sender_map = db_sender_maps.get(db_path, {})
         msg = _row_to_message(row, chat_id, decrypted_dir, parse_xml=True,
                               sender_map=sender_map, wxid_name_cache=wxid_name_cache,
-                              own_wxid=wxid)
+                              own_wxid=wxid, name2id=db_name2id.get(db_path))
         messages.append(msg)
 
     result = {
@@ -1124,6 +1307,7 @@ def get_chat_stats(decrypted_dir: str, chat_id: str, wxid: str = None) -> dict:
     min_ts = None
     max_ts = None
     sender_dist = {}
+    wxid_name_cache = {}
 
     for db_path, table_name in all_dbs:
         try:
@@ -1141,123 +1325,43 @@ def get_chat_stats(decrypted_dir: str, chat_id: str, wxid: str = None) -> dict:
             if row[2] and (max_ts is None or row[2] > max_ts):
                 max_ts = row[2]
 
-            # Resolve individual senders for sender_distribution
-            if is_group:
-                cur.execute(
-                    f"SELECT message_content, real_sender_id, origin_source, local_type "
-                    f"FROM [{table_name}] WHERE create_time > 1000000000"
-                )
-                wxid_name_cache = {}
-                for row2 in cur.fetchall():
-                    content = row2[0]
-                    real_sender_id = row2[1] or 0
-                    origin = row2[2]
-                    ltype = (row2[3] or 0) & _LOCAL_TYPE_MASK if isinstance(row2[3], (int, float)) else (row2[3] or 0)
-
-                    if origin == 1:
-                        raw_sender = '__self__'
-                        display_name = '我'
-                    elif ltype in (10000, 10002):
-                        raw_sender = '__sys__'
-                        display_name = '系统消息'
-                    else:
-                        if isinstance(content, bytes):
-                            try:
-                                content = content.decode('utf-8', errors='replace')
-                            except Exception:
-                                content = ''
-                        content_sender = ''
-                        if isinstance(content, str) and ':\n' in content[:100]:
-                            parts = content.split(':\n', 1)
-                            content_sender = _clean_sender_prefix(parts[0])
-                        if content_sender:
-                            raw_sender = content_sender
-                            if content_sender not in wxid_name_cache:
-                                name = resolve_wxid(decrypted_dir, content_sender)
-                                wxid_name_cache[content_sender] = name if (name and name != content_sender) else content_sender
-                            display_name = wxid_name_cache[content_sender]
-                        else:
-                            cache_key = f'_rsid_{real_sender_id}'
-                            raw_sender = cache_key
-                            if cache_key not in wxid_name_cache:
-                                wxid_name_cache[cache_key] = _resolve_sender_name(
-                                    decrypted_dir, real_sender_id, '',
-                                    wxid_name_cache=wxid_name_cache)
-                            display_name = wxid_name_cache[cache_key]
-
-                    entry = sender_dist.get(raw_sender)
-                    if entry:
-                        entry['count'] += 1
-                    else:
-                        sender_dist[raw_sender] = {'name': display_name, 'count': 1}
-            else:
-                sender_map = _build_sender_map(conn, table_name, own_wxid=wxid, chat_id=chat_id)
-
-                self_rsid = None
-                other_rsid = None
-                for s_rsid, s_val in sender_map.items():
-                    if s_val == '__other__':
-                        other_rsid = s_rsid
-                    elif s_val and s_val != '__self__':
-                        self_rsid = s_rsid
-                if self_rsid is None:
-                    for s_rsid, s_val in sender_map.items():
-                        if s_val == '__self__':
-                            self_rsid = s_rsid
-                            break
-
-                if self_rsid is not None:
-                    cur.execute(
-                        f"SELECT real_sender_id, origin_source, COUNT(*) FROM [{table_name}]"
-                        f" WHERE create_time > 1000000000"
-                        f" GROUP BY real_sender_id, origin_source"
-                    )
-                    for rsid, origin, cnt in cur.fetchall():
-                        rsid_int = int(rsid) if rsid else 0
-                        if rsid_int and self_rsid and rsid_int == self_rsid:
-                            sender_dist['我'] = sender_dist.get('我', 0) + cnt
-                        elif rsid_int and other_rsid and rsid_int == other_rsid:
-                            sender_dist[partner_display] = sender_dist.get(partner_display, 0) + cnt
-                        elif rsid_int == 0 and origin == 1:
-                            sender_dist['我'] = sender_dist.get('我', 0) + cnt
-                        elif rsid_int == 0:
-                            sender_dist[partner_display] = sender_dist.get(partner_display, 0) + cnt
-                        else:
-                            if origin == 1:
-                                sender_dist['我'] = sender_dist.get('我', 0) + cnt
-                            else:
-                                sender_dist[partner_display] = sender_dist.get(partner_display, 0) + cnt
+            # ---- 发送者归属：**唯一权威实现**（Name2Id 优先）------------------
+            # `engine/services/sender_model.py`；大规模验证见 `[K]`：
+            #   * 与内容证据交叉验证 234,299 行 → 一致率 99.956%
+            #   * 单聊内部一致性：名字只落在 {本人, chat_id}，第三方 0 行
+            #   * 同真值对照：旧规则错判 1.13% → 本方法 0.056%（178,759 行）
+            n2i = load_name2id(conn)
+            model = _sender_model(n2i, chat_id, wxid) if wxid else None
+            cur.execute(
+                f"SELECT message_content, real_sender_id, origin_source, local_type "
+                f"FROM [{table_name}] WHERE create_time > 1000000000"
+            )
+            for _mc, _rsid, _origin, _lt_raw in cur.fetchall():
+                _lt = ((_lt_raw or 0) & _LOCAL_TYPE_MASK
+                       if isinstance(_lt_raw, (int, float)) else (_lt_raw or 0))
+                if model is not None:
+                    _side, _src, _member = model.classify(_rsid, _origin, _mc,
+                                                          local_type=_lt)
                 else:
-                    cur.execute(
-                        f"SELECT origin_source, message_content, real_sender_id, local_type "
-                        f"FROM [{table_name}] WHERE create_time > 1000000000"
-                    )
-                    for r in cur.fetchall():
-                        origin = r[0]
-                        content = r[1]
-                        rsid = r[2] or 0
-                        ltype = (r[3] or 0) & _LOCAL_TYPE_MASK if isinstance(r[3], (int, float)) else (r[3] or 0)
-                        if origin == 1:
-                            sender_dist['我'] = sender_dist.get('我', 0) + 1
-                        elif isinstance(content, str) and ':\n' in content[:100]:
-                            parts = content.split(':\n', 1)
-                            cs = _clean_sender_prefix(parts[0])
-                            if cs and wxid and cs == wxid:
-                                sender_dist['我'] = sender_dist.get('我', 0) + 1
-                            else:
-                                sender_dist[partner_display] = sender_dist.get(partner_display, 0) + 1
-                        elif rsid and rsid != 0 and sender_map:
-                            wxid_from_map = sender_map.get(int(rsid))
-                            if wxid_from_map and wxid and wxid_from_map == wxid:
-                                sender_dist['我'] = sender_dist.get('我', 0) + 1
-                            elif wxid_from_map is None:
-                                sender_dist['我'] = sender_dist.get('我', 0) + 1
-                            else:
-                                sender_dist[partner_display] = sender_dist.get(partner_display, 0) + 1
-                        elif ltype == 1 and isinstance(content, str) and content.strip():
-                            sender_dist['我'] = sender_dist.get('我', 0) + 1
-                        else:
-                            sender_dist[partner_display] = sender_dist.get(partner_display, 0) + 1
+                    # 没有账号 id（拿不到 Name2Id 的对照面）时退化：只认 origin，
+                    # 其余一律"归属未定"——**绝不猜**（这正是历史缺陷的来源）。
+                    _side, _member = ('me' if int(_origin or 0) == 1 else 'unknown'), None
+                if _side == SIDE_ME:
+                    _key, _label = '__self__', '我'
+                elif _side == SIDE_SYSTEM:
+                    _key, _label = '__sys__', '系统消息'
+                elif _side == SIDE_UNKNOWN:
+                    _key, _label = '__unknown__', '归属未定'
+                else:
+                    _key = _member or chat_id
+                    _label = (model.member_label(_member, decrypted_dir, wxid_name_cache)
+                              if (model is not None and _member)
+                              else (partner_display or chat_id)) or _key
+                _entry = sender_dist.get(_key)
+                if _entry:
+                    _entry['count'] += 1
+                else:
+                    sender_dist[_key] = {'name': _label, 'count': 1}
 
             cur.close()
             conn.close()
@@ -1268,16 +1372,6 @@ def get_chat_stats(decrypted_dir: str, chat_id: str, wxid: str = None) -> dict:
         'start': datetime.fromtimestamp(min_ts).strftime('%Y-%m-%d') if min_ts else '',
         'end': datetime.fromtimestamp(max_ts).strftime('%Y-%m-%d') if max_ts else '',
     }
-
-    # Convert sender_dist from {raw: count} to {name: count} format for non-group
-    if not is_group:
-        result_dist = {}
-        for k, v in sender_dist.items():
-            if k == '我':
-                result_dist['我'] = v
-            else:
-                result_dist[partner_display] = result_dist.get(partner_display, 0) + v
-        sender_dist = result_dist
 
     return {
         'chat_id': chat_id,

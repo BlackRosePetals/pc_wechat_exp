@@ -127,19 +127,51 @@ class TestBuildWhere:
         clause, params = _build_where(None, None, None, '__self__', None)
         assert 'origin_source = 1' in clause
 
+    def test_sender_self_with_own_forms_matches_name2id_too(self):
+        """给了账号 id 时，`__self__` 还要覆盖"Name2Id 指到本人"的那些行。
+
+        为什么需要：`origin_source` 只覆盖一部分自发消息（本机实测：`origin==1` 的行
+        只占自发消息的一小部分），其余自发消息必须靠 `Name2Id` 才能认出来。
+        """
+        clause, params = _build_where(None, None, None, '__self__', None,
+                                      own_wxid='wxid_me_1a2b')
+        assert 'origin_source = 1' in clause
+        assert 'SELECT rowid FROM Name2Id WHERE user_name IN' in clause
+        assert 'wxid_me_1a2b' in params
+        assert 'wxid_me' in params          # 裸 id 形态也要在里面
+
     def test_sender_sys(self):
         clause, params = _build_where(None, None, None, '__sys__', None)
         assert '10000' in clause
         assert '10002' in clause
 
     def test_sender_other_non_group(self):
+        """具体某个人：按 `Name2Id` **精确**匹配（不再是 "origin_source != 1"）。
+
+        旧行为（`origin_source != 1`）对单聊等于"什么都不过滤"——因为绝大多数行
+        origin 本来就不是 1；这正是 issue #16 里"选了某人还是全部消息"的原因。
+        """
         clause, params = _build_where(None, None, None, 'someone', None, is_group=False)
-        assert 'origin_source != 1' in clause
+        assert 'real_sender_id IN (SELECT rowid FROM Name2Id WHERE user_name = ?)' in clause
+        assert 'origin_source != 1' not in clause
+        assert params == ['someone']
 
     def test_sender_other_group(self):
+        """群聊里选某人：同样走 Name2Id 精确匹配。
+
+        旧行为是 `message_content LIKE 'someone:\\n%'` —— 对**没有正文前缀的媒体消息**
+        （图片/语音/文件）永远筛不出来。
+        """
         clause, params = _build_where(None, None, None, 'someone', None, is_group=True)
-        assert 'message_content LIKE ?' in clause
-        assert any('someone' in str(p) for p in params)
+        assert 'real_sender_id IN (SELECT rowid FROM Name2Id WHERE user_name = ?)' in clause
+        assert 'message_content LIKE ?' not in clause
+        assert params == ['someone']
+
+    def test_sender_unknown_bucket(self):
+        """`__unknown__` = 该分片 `Name2Id` 里没有这个 rsid（归属未定）。"""
+        clause, params = _build_where(None, None, None, '__unknown__', None)
+        assert 'real_sender_id NOT IN (SELECT rowid FROM Name2Id)' in clause
+        assert params == []
 
     def test_keyword(self):
         clause, params = _build_where(None, None, None, None, 'hello')
