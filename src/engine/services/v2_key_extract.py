@@ -1007,7 +1007,7 @@ def _same_xor(raw, xor_key: int) -> bool:
         return False
 
 
-def _merge_into_cache(decrypted_dir, new_keys, xor_key=None):
+def _merge_into_cache(decrypted_dir, new_keys, xor_key=None, xor_src=None):
     """Merge newly found keys into _media_keys.json cache.
 
     xor_key: 账号级派生 XOR（``code & 0xFF``）。**给出真值时写这个值**，并且会把**这批
@@ -1016,6 +1016,13 @@ def _merge_into_cache(decrypted_dir, new_keys, xor_key=None):
         注意：这里**只**修 ``new_keys`` 里出现过的 md5，不会去重写整个缓存 ——
         "整库回溯修复"不在这里做（见报告里的残留限制）。
         不给出（内存扫描路径手上确实没有派生值）时保持历史行为：写 ``0xc9``。
+    xor_src: 这个 ``xor_key`` **是怎么来的**（可观测性，issue #16 新评论要求）。
+        取值：``'derived'``（内存/离线派生并用真文件验证过，缺省且在 xor_key 非空时用）、
+        ``'repaired'``（离线修复通道就地纠正写入）、``'default'``（拿不到派生值 ⇒ 0xC9）。
+        ⚠️ 为什么要存进文件：**老版本写下的 ``0xc9`` 与"派生真值恰好是 0xC9"在缓存里
+        长得一模一样**，读侧日志只能说 "xor from cache"，报告者那种"缓存里的 0xc9 到底是
+        真值还是老版本写死的"就无法区分。存了来源，读侧才能如实分类。
+        老缓存没有这个字段 ⇒ 读侧记为 ``legacy``（**不假设**它是哪一种），并打印出来。
     """
     import json
     keys_file = os.path.join(decrypted_dir, '_media_keys.json')
@@ -1029,6 +1036,8 @@ def _merge_into_cache(decrypted_dir, new_keys, xor_key=None):
         pass
 
     xor_str = '0x%02x' % (int(xor_key) & 0xFF) if xor_key is not None else '0xc9'
+    if xor_src is None:
+        xor_src = 'derived' if xor_key is not None else 'default'
 
     md5_keys = existing.get('md5_keys', {})
     added = 0
@@ -1039,11 +1048,18 @@ def _merge_into_cache(decrypted_dir, new_keys, xor_key=None):
             md5_keys[md5_val] = {
                 'aes_key': aes_key.hex(),
                 'xor_key': xor_str,
+                'xor_src': xor_src,
             }
             added += 1
-        elif xor_key is not None and not _same_xor(entry.get('xor_key'), xor_key):
-            entry['xor_key'] = xor_str
-            repaired += 1
+        elif not isinstance(entry, dict):
+            continue
+        else:
+            # 来源也要写：老条目可能是"来源不明"，纠正之后必须变成"已知来源"。
+            if entry.get('xor_src') != xor_src:
+                entry['xor_src'] = xor_src
+            if xor_key is not None and not _same_xor(entry.get('xor_key'), xor_key):
+                entry['xor_key'] = xor_str
+                repaired += 1
 
     if added or repaired:
         existing['md5_keys'] = md5_keys
@@ -1057,8 +1073,7 @@ def _merge_into_cache(decrypted_dir, new_keys, xor_key=None):
         _src = (f'derived {xor_str}' if xor_key is not None
                 else 'default 0xc9 (no derived value available)')
         print(f"[v2_key] _media_keys.json: +{added} new, ~{repaired} repaired "
-              f"— xor source = {_src}", flush=True)
-
+              f"— xor source = {_src} (xor_src={xor_src})", flush=True)
     return added
 
 
@@ -1141,7 +1156,8 @@ def _repair_cached_xor(decrypted_dir, xor_key, aes_key=None) -> int:
 
     # 复用 `_merge_into_cache(..., xor_key=真值)` 的既有纠正能力：这些 md5 **已经在缓存里**，
     # 它对已存在的条目**只改 `xor_key`、不动 `aes_key`**（就是它的既有纠正分支）。
-    _merge_into_cache(decrypted_dir, payload, xor_key=truth)
+    # `xor_src='repaired'`：让读侧能看出"这个值是被离线修复通道就地纠正过的"。
+    _merge_into_cache(decrypted_dir, payload, xor_key=truth, xor_src='repaired')
 
     fixed = len(payload)
     try:
@@ -1246,6 +1262,13 @@ def _clean_wxid(wxid: str) -> str:
     """Strip the suffix after the second underscore (py_wx_key CleanWxid).
 
     'wxid_example12345_10e8' -> 'wxid_example12345'
+
+    ⚠️ **不要再用它当"这个值能不能用来派生密钥"的守门人**（issue #16 新评论）：
+    它对**不带 `wxid_` 前缀**的账号目录名原样返回（`myalias_68f8` → `myalias_68f8`），
+    而历史上调用方紧接着写 `if not wxid.startswith('wxid_')` ⇒ 自定义微信号的账号
+    **整条密钥链路被静默掐断**（报告者的日志：`[mmkv] Cannot determine wxid`）。
+    现在改用 :func:`_account_id_candidates` 给出**多个候选**，由真文件验证取胜。
+    保留本函数只是为了与 py_wx_key 的原始语义保持可比。
     """
     if not wxid or not wxid.startswith('wxid_'):
         return wxid
@@ -1253,6 +1276,108 @@ def _clean_wxid(wxid: str) -> str:
     if len(parts) >= 3:
         return '_'.join(parts[:2])
     return wxid
+
+
+# 账号目录下的 `.wxid`（备份/年报流程会写）：只是**众多来源之一**，同样要过验证。
+_WXID_SIDE_FILE = '.wxid'
+
+
+def _account_dir_name_from_hardlink_db(decrypted_dir: str) -> list:
+    """从 `hardlink.db` 的 `db_info.uuid` 推出存储根，返回根下**所有真实子目录名**。
+
+    issue #16：以前这里只认 `wxid_` 前缀 ⇒ 目录名是 `<自定义微信号>_68f8` 的机器
+    一个候选都拿不到。现在**不按名字筛**，由调用方用真文件验证决定。
+    """
+    names = []
+    hardlink_db = os.path.join(decrypted_dir, "hardlink", "hardlink.db")
+    if not os.path.isfile(hardlink_db):
+        hardlink_db = os.path.join(decrypted_dir, "HardLink", "hardlink.db")
+    if not os.path.isfile(hardlink_db):
+        return names
+    try:
+        conn = sqlite3.connect(hardlink_db)
+        row = conn.execute(
+            "SELECT ValueStdStr FROM db_info WHERE Key='uuid'"
+        ).fetchone()
+        conn.close()
+    except sqlite3.Error:
+        return names
+    if not row or not row[0]:
+        return names
+    parts = str(row[0]).split('_', 2)
+    if len(parts) < 3:
+        return names
+    storage_root = parts[-1]
+    if not os.path.isdir(storage_root):
+        return names
+    try:
+        for d in sorted(os.listdir(storage_root)):
+            if d.startswith('.') or not os.path.isdir(os.path.join(storage_root, d)):
+                continue
+            names.append(d)
+    except OSError:
+        return names
+    return names
+
+
+def _account_id_candidates(decrypted_dir: str, wxid: str = None) -> tuple:
+    """收集"账号 id 的候选形态" —— 返回 ``(candidates, raw_sources)``。
+
+    ``raw_sources`` 是**没展开成形态**的原始名字（目录名一类），供"按目录去 glob
+    `.dat`"这类**要访问文件**的调用使用；``candidates`` 才是给密钥派生用的。
+
+    来源（按可信度排序）：
+      1. 调用方给的值（可能是账号目录名、也可能是裸 id）；
+      2. ``<decrypted_dir>/.wxid``（备份流程留下的账号名，存在才用）；
+      3. ``basename(dirname(decrypted_dir))``（历史行为）；
+      4. `hardlink.db` → 存储根 → 根下所有真实子目录名。
+
+    ⚠️ 全部只是**候选**。调用方必须拿真文件（V2 `.dat` 的 AES 段 / 数据库首页 HMAC）
+    验证；验证用 :func:`_try_key`。
+    """
+    from engine.utils import account_id_candidates as _expand  # 避免模块级循环依赖
+
+    raw = []
+    if wxid:
+        raw.append(str(wxid).strip())
+    try:
+        side = os.path.join(str(decrypted_dir), _WXID_SIDE_FILE)
+        if os.path.isfile(side):
+            with open(side, 'r', encoding='utf-8', errors='replace') as f:
+                side_val = (f.read() or '').strip()
+            if side_val:
+                raw.append(side_val)
+    except OSError:
+        pass
+    raw.append(os.path.basename(os.path.dirname(str(decrypted_dir))))
+    raw.extend(_account_dir_name_from_hardlink_db(str(decrypted_dir)))
+
+    raw_sources = []
+    for r in raw:
+        r = (r or '').strip()
+        if r and r not in raw_sources:
+            raw_sources.append(r)
+
+    candidates = []
+    for r in raw_sources:
+        for c in _expand(r):
+            if c and c not in candidates:
+                candidates.append(c)
+    return candidates, raw_sources
+
+
+def _load_v2_ciphertexts_for_any_name(decrypted_dir, raw_sources) -> dict:
+    """按多个**目录名候选**去收集 V2 密文样本（`media/images` 那条与名字无关）。
+
+    `_load_v2_ciphertexts()` 用名字去 glob 实机存储目录；名字不对时只有
+    `<备份>/media/images` 那一路有效。这里依次试每个名字，拿到非空即止 ——
+    验证需要的是**样本**，不是"名字对不对"。
+    """
+    for name in list(raw_sources) + [None]:
+        tasks = _load_v2_ciphertexts(decrypted_dir, name)
+        if tasks:
+            return tasks
+    return {}
 
 
 def extract_keys_from_mmkv(decrypted_dir: str, wxid: str = None) -> dict:
@@ -1291,35 +1416,18 @@ def extract_keys_from_mmkv(decrypted_dir: str, wxid: str = None) -> dict:
     """
     if wxid is None:
         wxid = os.path.basename(os.path.dirname(decrypted_dir))
-        if not wxid.startswith('wxid_'):
-            # Try detection from hardlink DB
-            hardlink_db = os.path.join(decrypted_dir, "hardlink", "hardlink.db")
-            if not os.path.isfile(hardlink_db):
-                hardlink_db = os.path.join(decrypted_dir, "HardLink", "hardlink.db")
-            if os.path.isfile(hardlink_db):
-                try:
-                    conn = sqlite3.connect(hardlink_db)
-                    row = conn.execute(
-                        "SELECT ValueStdStr FROM db_info WHERE Key='uuid'"
-                    ).fetchone()
-                    conn.close()
-                    if row and row[0]:
-                        parts = str(row[0]).split('_', 2)
-                        if len(parts) >= 3 and os.path.isdir(parts[-1]):
-                            for d in os.listdir(parts[-1]):
-                                if d.startswith('wxid_') and os.path.isdir(
-                                    os.path.join(parts[-1], d)):
-                                    wxid = d
-                                    break
-                except sqlite3.Error:
-                    pass
 
-    # Clean wxid: strip suffix after second underscore (py_wx_key CleanWxid)
-    wxid = _clean_wxid(wxid)
-
-    if not wxid or not wxid.startswith('wxid_'):
-        print("[mmkv] Cannot determine wxid — skipping MMKV extraction", flush=True)
+    # ---- 账号 id 候选（issue #16 新评论：**不再按 `wxid_` 前缀猜名字**）----------
+    # 旧行为：名字不以 `wxid_` 开头 ⇒ 直接 return {}（日志 `Cannot determine wxid`）。
+    # 对"自定义微信号 + `<微信号>_68f8` 目录名"的机器，这等于把**唯一**能离线自愈
+    # 的通道整段掐死（报告者现场）。现在给出一组候选，后面的真文件验证自然淘汰错的。
+    id_candidates, raw_sources = _account_id_candidates(decrypted_dir, wxid)
+    if not id_candidates:
+        print("[mmkv] 没有任何账号 id 候选（给的值/目录名/hardlink.db 都拿不到）"
+              " — skipping MMKV extraction", flush=True)
         return {}
+    print(f"[mmkv] 账号 id 候选 {len(id_candidates)} 个（源 {len(raw_sources)} 个）；"
+          f"由真文件验证决定用哪个", flush=True)
 
     # 1. Find kvcomm directories and parse codes
     kvcomm_dirs = _scan_mmkv_kvcomm_dirs()
@@ -1335,24 +1443,24 @@ def extract_keys_from_mmkv(decrypted_dir: str, wxid: str = None) -> dict:
     print(f"[mmkv] Found {len(codes)} MMKV code(s) in {len(kvcomm_dirs)} kvcomm dirs: {codes}",
           flush=True)
 
-    # 2. Derive candidate keys for each code
+    # 2. 派生候选：(code × 账号 id 形态) —— 每个组合都用**真文件**验证
     candidates = []
     for code in codes:
-        xor_key, aes_key = _derive_key_from_mmkv(code, wxid)
-        print(f"[mmkv] Code {code} -> xor=0x{xor_key:02X} aes={aes_key.hex()}",
-              flush=True)
-        candidates.append((xor_key, aes_key, code))
+        for cand in id_candidates:
+            xor_key, aes_key = _derive_key_from_mmkv(code, cand)
+            candidates.append((xor_key, aes_key, code, cand))
 
     if not candidates:
         return {}
 
-    # 3. Load V2 ciphertexts for verification
-    tasks = _load_v2_ciphertexts(decrypted_dir, wxid)
+    # 3. Load V2 ciphertexts for verification（多个目录名候选都试，拿到样本即止）
+    tasks = _load_v2_ciphertexts_for_any_name(decrypted_dir, raw_sources)
     if not tasks:
         print("[mmkv] No V2 .dat files found for verification", flush=True)
         return {}
 
-    print(f"[mmkv] Testing {len(candidates)} candidate(s) against {len(tasks)} V2 file(s)...",
+    print(f"[mmkv] Testing {len(candidates)} candidate(s) "
+          f"({len(codes)} code × {len(id_candidates)} id 形态) against {len(tasks)} V2 file(s)...",
           flush=True)
 
     # 4. Verify each candidate against a small sample, then cache globally.
@@ -1403,36 +1511,42 @@ def extract_keys_from_mmkv(decrypted_dir: str, wxid: str = None) -> dict:
     verified_xor = None
     verified_code = None
     verified_aes = None
+    verified_id = None
 
-    for xor_key, aes_key, code in candidates:
+    for xor_key, aes_key, code, id_form in candidates:
         match_count = 0
         for md5 in sample_md5s:
             fmt = _try_key(aes_key, sample_pool[md5][1])
             if fmt:
                 match_count += 1
         if match_count == len(sample_md5s):
-            print(f"[mmkv] Code {code} verified ({match_count}/{len(sample_md5s)} sample files)",
+            print(f"[mmkv] Code {code} verified ({match_count}/{len(sample_md5s)} sample files)"
+                  f" — 账号 id 形态={id_form!r}（真文件验证通过，这一形态就是本账号的）",
                   flush=True)
             verified_codes.add(code)
             verified_xor = xor_key
             verified_code = code
             verified_aes = aes_key
+            verified_id = id_form
             # Cache for ALL pending files (not just the sample)
             for md5 in pending:
                 found_all[md5] = aes_key
             break  # One working code is enough
         elif match_count > 0:
-            print(f"[mmkv] Code {code} partial match ({match_count}/{len(sample_md5s)})",
+            print(f"[mmkv] Code {code} partial match ({match_count}/{len(sample_md5s)})"
+                  f" — 账号 id 形态={id_form!r}",
                   flush=True)
             verified_codes.add(code)
             verified_xor = xor_key
             verified_code = code
             verified_aes = aes_key
+            verified_id = id_form
             for md5 in pending:
                 found_all[md5] = aes_key
             break
         else:
-            print(f"[mmkv] Code {code} no match on sample files", flush=True)
+            print(f"[mmkv] Code {code} no match on sample files"
+                  f"（id 形态={id_form!r}）", flush=True)
 
     # XOR 与 AES 是**同一个 code** 派生的（`code & 0xFF`）：AES 在**真文件**上验证通过
     # ⇒ 这个 code 就是本账号的 ⇒ 派生出的 XOR 是**真值**，可以登记（供后续内存扫描 /
@@ -1440,7 +1554,8 @@ def extract_keys_from_mmkv(decrypted_dir: str, wxid: str = None) -> dict:
     if verified_xor is not None:
         _record_derived_xor(decrypted_dir, verified_xor)
         print(f"[mmkv] 已验证的派生 XOR = 0x{verified_xor & 0xFF:02x}"
-              f"（code={verified_code}）—— 已登记，供后续内存扫描 / 缓存修复复用",
+              f"（code={verified_code}，账号 id 形态={verified_id!r}）"
+              f"—— 已登记，供后续内存扫描 / 缓存修复复用",
               flush=True)
 
     if found_all:
@@ -1448,8 +1563,9 @@ def extract_keys_from_mmkv(decrypted_dir: str, wxid: str = None) -> dict:
               flush=True)
         _merge_into_cache(decrypted_dir, found_all, xor_key=verified_xor)
     elif verified_xor is None:
-        print("[mmkv] No keys matched — account may use different wxid or codes",
-              flush=True)
+        print(f"[mmkv] No keys matched — 试过 {len(id_candidates)} 个账号 id 形态 × "
+              f"{len(codes)} 个 code，都不匹配：账号可能用别的 id / 别的 code，"
+              f"或这些 .dat 不属于本账号", flush=True)
     else:
         # 验上了，但没有任何未缓存的文件 ⇒ 这次不是"发现"，只是"修复"（别再喊"没匹配上"）。
         print(f"[mmkv] 密钥已用真文件验证通过（code={verified_code}），"
@@ -1566,47 +1682,24 @@ def harvest_v2_keys(decrypted_dir, wxid=None, interval=2.0,
     if print_fn is None:
         print_fn = lambda *a, **kw: None
 
-    # Auto-detect wxid if not provided
+    # 账号名/账号 id 候选：harvest 只用它去**找 `.dat` 样本**（要访问文件 ⇒ 用目录名），
+    # 以及登记派生 XOR 时给 `_record_derived_xor` 用（那一步按 decrypted_dir 归一化）。
     if wxid is None:
         wxid = os.path.basename(os.path.dirname(decrypted_dir))
-        if not wxid.startswith('wxid_'):
-            # Try to detect from hardlink DB
-            wxid = None
-            hardlink_db = os.path.join(decrypted_dir, "hardlink", "hardlink.db")
-            if not os.path.isfile(hardlink_db):
-                hardlink_db = os.path.join(decrypted_dir, "HardLink", "hardlink.db")
-            if os.path.isfile(hardlink_db):
-                try:
-                    conn = sqlite3.connect(hardlink_db)
-                    row = conn.execute(
-                        "SELECT ValueStdStr FROM db_info WHERE Key='uuid'"
-                    ).fetchone()
-                    conn.close()
-                    if row and row[0]:
-                        parts = str(row[0]).split('_', 2)
-                        if len(parts) >= 3:
-                            storage_root = parts[-1]
-                            if os.path.isdir(storage_root):
-                                for d in os.listdir(storage_root):
-                                    if d.startswith('wxid_') and os.path.isdir(
-                                        os.path.join(storage_root, d)
-                                    ):
-                                        wxid = d
-                                        break
-                except sqlite3.Error:
-                    pass
+    id_candidates, raw_sources = _account_id_candidates(decrypted_dir, wxid)
 
-    if not wxid:
-        print_fn("[v2_harvest] ERROR: Cannot determine wxid")
+    if not raw_sources and not id_candidates:
+        print_fn("[v2_harvest] ERROR: 没有任何账号名候选（给的值 / 目录名 / hardlink.db 都拿不到）")
         return {}
 
-    # Load V2 ciphertexts
-    tasks = _load_v2_ciphertexts(decrypted_dir, wxid)
+    # Load V2 ciphertexts（多个目录名候选依次试）
+    tasks = _load_v2_ciphertexts_for_any_name(decrypted_dir, raw_sources)
     if not tasks:
         print_fn("[v2_harvest] No V2 .dat files found in backup")
         return {}
 
-    print_fn(f"[v2_harvest] Loaded {len(tasks)} V2 ciphertexts for verification")
+    print_fn(f"[v2_harvest] Loaded {len(tasks)} V2 ciphertexts for verification"
+             f"（账号名候选 {len(raw_sources)} 个 / id 形态 {len(id_candidates)} 个）")
 
     # Load existing cache to avoid re-scanning
     found_all = {}

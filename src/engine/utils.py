@@ -597,3 +597,71 @@ def bare_wxid(value):
     return text
 
 
+# ---------------------------------------------------------------------------
+# 账号 **id** 候选项：为"密钥派生"准备多个形态，由**真数据验证**取胜
+# ---------------------------------------------------------------------------
+# 背景（GitHub issue #16 新评论 + known-issues #43/#45/#46）
+# ----------------------------------------------------------
+# 微信 4.x 的账号**目录名**有三种形态（用户实测）：
+#   * `<裸 id>_<4 位十六进制>`（本机就是这种，如 24 字符）
+#   * 就是 `<裸 id>` 本身（没有随机后缀）
+#   * `<自定义微信号>_<4 位十六进制>` —— **自定义微信号不带 `wxid_` 前缀**
+# 而密钥派生（`MD5(str(code) + id)`）要的是**裸 id**，不是目录名。
+# 于是历史上到处写 `if wxid.startswith('wxid_'): ... else: 跳过` —— 对第三形态
+# **整条密钥链路直接失效**（issue #16 报告者：`[mmkv] Cannot determine wxid`）。
+#
+# 为什么不直接把 `bare_wxid()` 放宽？两条理由：
+#   1. `bare_wxid()` 的"≥3 段"判据是被
+#      `tests/test_bare_wxid.py` 与 `search._bare_wxid()` 逐字锁住的**比较用**语义，
+#      它的调用方（搜索 `发送者:我`、会话归属）拿它去**做相等比较**，
+#      放宽会让"本来就是裸 id"的值被削掉尾巴（如 `wxid_1234` → `wxid`）；
+#   2. 两段式 `<id>_<4hex>` 与"裸 id 里恰好带一个下划线"**在结构上不可区分**。
+# ⇒ 正确做法不是"猜一个更聪明的规则"，而是**给出多个候选项**，由调用方拿
+# **真实的加密文件**去验证（`v2_key_extract._try_key` / 数据库首页 HMAC 校验），
+# 验证通过的那个才算数。**这一步是安全的前提**：没有验证就不要用这些候选值。
+#
+# ⚠️ 这些候选项**只许用于"值比较 / 密钥派生入参"**，绝不许拿去拼**文件路径** ——
+# 路径必须用**真实存在的目录名**（`media._account_dirs_under()` / `resolve_account_dir()`）。
+
+
+def strip_account_dir_suffix(value) -> str:
+    """去掉账号名尾部的 `_<4 位十六进制>` —— **不看前缀，两段式也认**。
+
+    与 :func:`bare_wxid` 的区别只有一条：`bare_wxid` 要求 `_` 分段 ≥3（保守，
+    宁可不动也不乱截），本函数**也处理两段式**（`myalias_68f8` → `myalias`）。
+    单独一个函数是因为它**更激进**，只适合用在"后面还有真数据验证"的地方。
+
+    幂等：`strip_account_dir_suffix(strip_account_dir_suffix(x)) == strip_account_dir_suffix(x)`
+    （去掉之后尾部不再是 4 位十六进制时自然停下；`wxid_1234` 这种会继续被削，
+    所以**只许在验证场景里用**）。
+    """
+    text = (value or '').strip()
+    parts = text.split('_')
+    if len(parts) < 2:
+        return text
+    tail = parts[-1]
+    if len(tail) == _WXID_DIR_SUFFIX_LEN and all(c in _HEX_DIGITS for c in tail):
+        return '_'.join(parts[:-1])
+    return text
+
+
+def account_id_candidates(value) -> list:
+    """把"一个可能是账号目录名 / 裸 id 的值"展开成**候选账号 id**（按可信度排序）。
+
+    返回去重后的列表（可能为空列表 = 没拿到任何可用输入）。顺序即"猜"的先后：
+    原值 → `bare_wxid()`（严格规则）→ 去 `_<4hex>` 后缀（宽松规则）。
+
+    ⚠️ **调用方必须用真数据验证**（见本节的模块级说明）：这些是**候选**，不是结论。
+    ⚠️ **不许**用返回值拼路径。
+    ⚠️ 返回 `[]`（拿不到任何输入）与"候选都验证失败"是**两件不同的事**，
+    日志里必须分开说 —— 这正是 issue #16 里 `Cannot determine wxid` 那句话
+    既没说清"是没候选还是候选不匹配"、又把整条链路静默掐断的地方。
+    """
+    raw = (value or '').strip()
+    out = []
+    for cand in (raw, bare_wxid(raw), strip_account_dir_suffix(raw),
+                 strip_account_dir_suffix(bare_wxid(raw)),
+                 bare_wxid(strip_account_dir_suffix(raw))):
+        if cand and cand not in out:
+            out.append(cand)
+    return out

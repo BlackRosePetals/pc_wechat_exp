@@ -13,6 +13,8 @@ import struct
 import sys
 import time
 
+from engine.utils import account_id_candidates
+
 PAGE_SZ = 4096
 KEY_SZ = 32
 SALT_SZ = 16
@@ -170,15 +172,20 @@ def _extract_keys_from_mmkv(db_dir, db_files, salt_to_dbs, print_fn):
         print_fn("[MMKV] db_storage/MMKV/ 不存在 — 跳过 MMKV 提取")
         return key_map
 
-    # 从 db_dir 路径提取 wxid
+    # 账号名 → 账号 id **候选形态**（issue #16 新评论：不再按 `wxid_` 前缀猜名字）。
+    # `wxid_full` 是 `db_storage` 的父目录名（账号目录名），它可能是
+    # `<裸 wxid>` / `<裸 wxid>_<4hex>` / `<自定义微信号>_<4hex>` 三种形态之一；
+    # 旧代码要求它必须 `wxid_` 开头 ⇒ 第三种机器上整个 MMKV 策略被静默跳过。
+    # 候选由真实裁判淘汰：MMKV 是 AES-GCM（密钥不对 `decrypt_and_verify` 直接失败），
+    # 取出的 DB 密钥还要过首页 HMAC（`verify_enc_key`）。
     # e.g. D:\xwechat_files\wxid_example12345_10e8\db_storage
     wxid_full = os.path.basename(os.path.dirname(db_dir))
-    wxid_clean = _clean_wxid(wxid_full)
-    if not wxid_clean or not wxid_clean.startswith('wxid_'):
-        print_fn(f"[MMKV] 无法从路径提取 wxid: {db_dir}")
+    id_candidates = account_id_candidates(wxid_full)
+    if not id_candidates:
+        print_fn(f"[MMKV] 无法从路径取出账号 id 候选: {db_dir}")
         return key_map
-
-    print_fn(f"[MMKV] wxid: {wxid_full} -> cleaned: {wxid_clean}")
+    # 第一个候选就是调用方给的原值（日志里保留原值 → 形态 的写法，便于与旧日志对照）
+    print_fn(f"[MMKV] wxid: {wxid_full} -> 候选 id 形态 {id_candidates}")
 
     # 枚举 MMKV 文件，从文件名提取 code
     # 模式: f<hex>tinfo.mmkv -> code = int(hex, 16)
@@ -227,19 +234,16 @@ def _extract_keys_from_mmkv(db_dir, db_files, salt_to_dbs, print_fn):
         if len(key_map) >= len(salt_to_dbs):
             break
 
-        # 派生 AES 密钥
-        if isinstance(code_or_label, int):
-            aes_key_str = hashlib.md5(
-                f"{code_or_label}{wxid_clean}".encode()
-            ).hexdigest()[:16]
-        else:
-            aes_key_str = hashlib.md5(
-                wxid_clean.encode()
-            ).hexdigest()[:16]
-        aes_key = aes_key_str.encode('ascii')
+        # 派生 AES 密钥（对**每个候选 id 形态**都派生一遍；GCM 认证就是裁判）
+        key_candidates = []
+        for _id in id_candidates:
+            if isinstance(code_or_label, int):
+                _s = hashlib.md5(f"{code_or_label}{_id}".encode()).hexdigest()[:16]
+            else:
+                _s = hashlib.md5(_id.encode()).hexdigest()[:16]
+            key_candidates.append((_s, _s.encode('ascii'), _id))
 
         label = code_or_label if isinstance(code_or_label, int) else f"'{code_or_label}'"
-        print_fn(f"[MMKV] 尝试 code={label} key={aes_key_str}...")
 
         # 读取并解密 MMKV 文件
         try:
@@ -261,15 +265,26 @@ def _extract_keys_from_mmkv(db_dir, db_files, salt_to_dbs, print_fn):
         ciphertext = raw[20:4 + total_size - 16]
         auth_tag = raw[4 + total_size - 16:4 + total_size]
 
-        try:
-            cipher = AES.new(aes_key, AES.MODE_GCM, nonce=iv)
-            plaintext = cipher.decrypt_and_verify(ciphertext, auth_tag)
-        except (ValueError, KeyError):
-            print_fn(f"[MMKV] GCM 认证失败 code={label}")
+        plaintext = None
+        matched_id = None
+        for aes_key_str, aes_key, _id in key_candidates:
+            print_fn(f"[MMKV] 尝试 code={label} key={aes_key_str} (id={_id})...")
+            try:
+                cipher = AES.new(aes_key, AES.MODE_GCM, nonce=iv)
+                plaintext = cipher.decrypt_and_verify(ciphertext, auth_tag)
+                matched_id = _id
+                break
+            except (ValueError, KeyError):
+                print_fn(f"[MMKV] GCM 认证失败 code={label} (id={_id})")
+                continue
+            except Exception as e:
+                print_fn(f"[MMKV] 解密错误 code={label} (id={_id}): {e}")
+                continue
+
+        if plaintext is None:
             continue
-        except Exception as e:
-            print_fn(f"[MMKV] 解密错误 code={label}: {e}")
-            continue
+        if matched_id != id_candidates[0]:
+            print_fn(f"[MMKV] 生效的账号 id 形态 = {matched_id}（不是第一个候选）")
 
         print_fn(f"[MMKV] 解密 {os.path.basename(filepath)}: {len(plaintext)} 字节")
 

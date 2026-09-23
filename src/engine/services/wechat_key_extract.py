@@ -29,6 +29,7 @@ import time
 
 # Strategy 3: read-only Config.Cipher scan (WeChat 4.1.10+, no admin needed)
 from engine.services.config_cipher_extract import extract_keys_via_config_cipher
+from engine.utils import account_id_candidates
 
 PAGE_SZ = 4096
 KEY_SZ = 32
@@ -181,13 +182,20 @@ def extract_keys_from_mmkv(db_dir, db_files, salt_to_dbs, key_map, print_fn):
     if not os.path.isdir(mmkv_dir):
         return 0
 
+    # 账号名 → 账号 id **候选形态**（issue #16 新评论：不再按 `wxid_` 前缀猜名字）。
+    # 以前这里写 `if not wxid_clean.startswith('wxid_') : return 0`，而 `wxid_full` 是
+    # **账号目录名** ⇒ 目录名是 `<自定义微信号>_68f8` 的机器（自定义微信号不带 `wxid_` 前缀）
+    # 整个 MMKV 策略被静默跳过（`[MMKV] Cannot determine wxid from path`）。
+    # 现在给出候选，由**下游的真凭实据**淘汰错的：MMKV 是 AES-GCM，密钥不对
+    # `decrypt_and_verify` 直接失败；即便解开了，取出的密钥还要过数据库首页 HMAC 校验
+    # （见本函数末尾的 `verify_enc_key`）⇒ 多给候选**不会**降低正确性。
     wxid_full = os.path.basename(os.path.dirname(db_dir))
-    wxid_clean = _clean_wxid(wxid_full)
-    if not wxid_clean or not wxid_clean.startswith('wxid_'):
-        print_fn("[MMKV] Cannot determine wxid from path")
+    id_candidates = account_id_candidates(wxid_full)
+    if not id_candidates:
+        print_fn("[MMKV] 没有账号 id 候选（db_storage 的父目录名取不到）")
         return 0
 
-    print_fn(f"[MMKV] wxid={wxid_full} -> {wxid_clean}")
+    print_fn(f"[MMKV] wxid={wxid_full} -> 候选 id 形态 {id_candidates}")
 
     CODE_RE = re.compile(r'^f([0-9a-fA-F]+)tinfo\.mmkv$')
 
@@ -249,14 +257,18 @@ def extract_keys_from_mmkv(db_dir, db_files, salt_to_dbs, key_map, print_fn):
         ciphertext = raw[20:auth_tag_start]
         auth_tag = raw[auth_tag_start:4 + total_size]
 
-        # Derive keys
+        # Derive keys（对**每个候选 id 形态**都派生一遍；GCM 认证就是裁判）
         if isinstance(code_or_label, int):
-            key_candidates = _derive_mmkv_aes_key(code_or_label, wxid_clean)
+            key_candidates = [(_lbl + '|id=' + _id, _k)
+                              for _id in id_candidates
+                              for _lbl, _k in _derive_mmkv_aes_key(code_or_label, _id)]
             label = f'code={code_or_label}'
         else:
             # Non-standard filename - try just wxid
             key_candidates = [
-                ('wxid_only', hashlib.md5(wxid_clean.encode()).hexdigest()[:16].encode()),
+                ('wxid_only|id=' + _id,
+                 hashlib.md5(_id.encode()).hexdigest()[:16].encode())
+                for _id in id_candidates
             ]
             label = f"'{code_or_label}'"
 

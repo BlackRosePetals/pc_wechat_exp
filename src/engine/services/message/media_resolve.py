@@ -8,7 +8,7 @@ import os
 import re
 import sqlite3
 
-from engine.services.media import _get_base_storage
+from engine.services.media import _get_base_storage, _account_dirs_under
 
 
 def _scan_filesystem_for_media(decrypted_dir: str, file_name_prefix: str,
@@ -16,9 +16,15 @@ def _scan_filesystem_for_media(decrypted_dir: str, file_name_prefix: str,
     """Scan the filesystem for a media file by file_name prefix.
 
     Walks msg/attach (images), msg/video, or msg/file directories under all
-    wxid directories in the WeChat file storage, looking for a file whose
+    account directories in the WeChat file storage, looking for a file whose
     name starts with file_name_prefix. Returns a relative path like
     'msg/attach/{hash}/{date}/Img/{file_name}' or None.
+
+    ⚠️ 账号目录**不按名字筛**（issue #16）：目录名可能是 `<裸 wxid>`、
+    `<裸 wxid>_<4hex>`，也可能是 `<自定义微信号>_<4hex>`（不带 `wxid_` 前缀）。
+    以前这里写 `d.startswith('wxid')` ⇒ 自定义微信号的机器一个目录都扫不到。
+    现在用 `media._account_dirs_under()`（真实子目录，排序稳定、上限 32 个），
+    与媒体主路径的候选口径保持一致。
     """
     import os as _os
 
@@ -26,12 +32,8 @@ def _scan_filesystem_for_media(decrypted_dir: str, file_name_prefix: str,
     if not base:
         return None
 
-    # Try all wxid directories under the base storage
-    try:
-        wxid_dirs = [d for d in _os.listdir(base)
-                     if _os.path.isdir(_os.path.join(base, d))
-                     and d.startswith('wxid')]
-    except OSError:
+    wxid_dirs = _account_dirs_under(base)
+    if not wxid_dirs:
         return None
 
     if ltype == 3:

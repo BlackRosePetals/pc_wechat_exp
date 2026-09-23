@@ -728,6 +728,10 @@ def _load_or_build_image_key_map(decrypted_dir: str) -> dict:
             md5_keys = cached.get('md5_keys', {})
             _xor_from_cache = 0
             _xor_defaulted = 0
+            # 来源统计（issue #16 新评论）：**"派生真值恰好是 0xC9"与"老版本写死的 0xC9"
+            # 在缓存里长得一模一样**，只看值无法区分 ⇒ 从 `xor_src` 字段分类，
+            # 老缓存没有这个字段的记为 `legacy`（来源不明，**不假设**它是哪一种）。
+            _xor_src_counts = {}
             for md5, v in md5_keys.items():
                 try:
                     _raw_xor = v.get('xor_key')
@@ -738,13 +742,17 @@ def _load_or_build_image_key_map(decrypted_dir: str) -> dict:
                         # 后果与"用错密钥"完全相同，却更隐蔽（issue #16 症状 2 同族）。
                         xor_val = _DAT_V2_DEFAULT_XOR
                         _xor_defaulted += 1
+                        _src = 'default-missing'
                     else:
                         xor_val = (int(_raw_xor, 16) if isinstance(_raw_xor, str)
                                    else int(_raw_xor))
                         _xor_from_cache += 1
+                        _src = str(v.get('xor_src') or 'legacy')
+                    _xor_src_counts[_src] = _xor_src_counts.get(_src, 0) + 1
                     result[md5] = {
                         'aes': bytes.fromhex(v['aes_key']),
-                        'xor': xor_val
+                        'xor': xor_val,
+                        'xor_src': _src,
                     }
                 except (ValueError, KeyError, TypeError):
                     pass
@@ -761,14 +769,27 @@ def _load_or_build_image_key_map(decrypted_dir: str) -> dict:
                     print(f"[media] Added {_h_added} _h thumbnail variants to cached keys", flush=True)
                 # 把"这次用的是缓存里的值"还是"回退到默认值"显式打出来 ——
                 # 这个缺陷之所以长期存在，正是因为两者从外部看不出区别。
+                # 追加：**来源**也要打（derived / repaired / default-* / legacy）。
+                _src_txt = ', '.join('%s=%d' % (k, _xor_src_counts[k])
+                                     for k in sorted(_xor_src_counts))
                 if _xor_defaulted:
                     print(f"[media] Loaded {len(result)} verified keys from cache "
                           f"(xor: from cache={_xor_from_cache}, "
                           f"missing xor_key → default 0x{_DAT_V2_DEFAULT_XOR:02X}="
-                          f"{_xor_defaulted} — NOT a derived value)", flush=True)
+                          f"{_xor_defaulted} — NOT a derived value; "
+                          f"xor_src: {_src_txt})", flush=True)
                 else:
                     print(f"[media] Loaded {len(result)} verified keys from cache "
-                          f"(xor from cache for all {_xor_from_cache})", flush=True)
+                          f"(xor from cache for all {_xor_from_cache}; "
+                          f"xor_src: {_src_txt})", flush=True)
+                # 老缓存的来源是未知的 ⇒ 必须说出来：报告者那种"0xC9 到底是不是派生真值"
+                # 的疑问，靠这一行就能定性（下一行给出可操作的建议）。
+                if any(k == 'legacy' for k in _xor_src_counts):
+                    print(f"[media] ⚠️ 其中 {_xor_src_counts.get('legacy', 0)} 条 xor_key "
+                          f"**来源不明**（老版本写下的，没有 xor_src 字段）—— "
+                          f"若图片『只有上面一小部分能显示』，就是这个值可能不是派生真值；"
+                          f"让它被纠正的办法：保持微信运行并打开一次该图（内存路径会回填真值），"
+                          f"或执行 harvest-keys", flush=True)
 
     except Exception:
         pass
@@ -1659,23 +1680,31 @@ def serve_hardlink_media(decrypted_dir: str, media_info: dict, wxid: str = None)
             # （真实缓存里 2/28 个 JPEG 是"源图本身缺尾"，用户本来就能看到）。
             _incomplete_candidates = []
 
-            def _stash_incomplete(dec_path, mime, source_tag=None, more_steps=True):
+            def _stash_incomplete(dec_path, mime, source_tag=None, more_steps=True,
+                                  key_src=None):
                 """记住一个"可判定类型但确认缺尾"的候选，并**继续**尝试后续步骤。
 
                 为什么暂存**路径**而不是字节：一个候选可能就是几十 MB，而真正需要它的概率
                 很低（控制方实测真实缓存里 2/28≈7%）。
+
+                ``key_src``：**解这张图用的密钥来自哪里**（`cache:derived` /
+                `cache:legacy` / `memory` / `mmkv` / `thumbnail`…）。issue #16 新评论的
+                报告者只能看到"图不完整"，看不出"用的是哪把 XOR、它是派生真值还是老版本
+                写死的默认值" ⇒ 这一行就是给那个问题用的。
                 """
                 _incomplete_candidates.append({
                     'path': dec_path,
                     'mime': mime,
                     'source_tag': source_tag,
+                    'key_src': key_src,
                     'why': _describe_incompleteness(mime),
                 })
                 _tag = f"（源={source_tag}）" if source_tag else ""
+                _key = f"，密钥来源={key_src}" if key_src else ""
                 _tail = "暂存为兜底并**继续**尝试后续步骤" if more_steps else "暂存为兜底（候选链已走完）"
                 print(f"  [V2] 候选未通过完整性校验（解出的图不完整："
                       f"{_describe_incompleteness(mime)}），"
-                      f"{_tail}: {os.path.basename(dec_path)}{_tag}", flush=True)
+                      f"{_tail}: {os.path.basename(dec_path)}{_tag}{_key}", flush=True)
 
             def _serve_incomplete_fallback():
                 """链走完仍没有 `True`/`None` 的候选 ⇒ 回退返回暂存的"最大"那个。
@@ -1692,7 +1721,9 @@ def serve_hardlink_media(decrypted_dir: str, media_info: dict, wxid: str = None)
                     return None
                 print(f"  [V2] 所有候选都未通过完整性校验（暂存 {len(_incomplete_candidates)} 个），"
                       f"回退返回其中最大的一个: {os.path.basename(cand['path'])} "
-                      f"({cand['why']}, {_size} 字节, 源={cand.get('source_tag') or 'cache'}) —— 不 404",
+                      f"({cand['why']}, {_size} 字节, 源={cand.get('source_tag') or 'cache'}"
+                      f"{('，密钥来源=' + cand['key_src']) if cand.get('key_src') else ''}"
+                      f") —— 不 404",
                       flush=True)
                 resp = send_file(os.path.abspath(cand['path']), mimetype=cand['mime'],
                                  max_age=86400)
@@ -1702,7 +1733,7 @@ def serve_hardlink_media(decrypted_dir: str, media_info: dict, wxid: str = None)
                                                          or 'v2-incomplete-fallback')
                 return resp
 
-            def _serve_decrypted(dec_path, source_tag=None):
+            def _serve_decrypted(dec_path, source_tag=None, key_src=None):
                 """按文件头给出正确 MIME 后返回响应；不是图片则返回 None。
 
                 完整性校验（issue #46）：
@@ -1722,14 +1753,14 @@ def serve_hardlink_media(decrypted_dir: str, media_info: dict, wxid: str = None)
                 # `_image_completeness` 都不调用 ⇒ 这条路上**零额外 IO**、与旧行为逐字一致。
                 if (mime in _IMAGE_DECIDABLE_MIMES
                         and _image_completeness(dec_path, mime) is False):
-                    _stash_incomplete(dec_path, mime, source_tag)
+                    _stash_incomplete(dec_path, mime, source_tag, key_src=key_src)
                     return None
                 resp = send_file(os.path.abspath(dec_path), mimetype=mime, max_age=86400)
                 if source_tag:
                     resp.headers['X-WeChat-Image-Source'] = source_tag
                 return resp
 
-            def _try_v2_decrypt(key_bytes, xor_val, src=None, source_tag=None):
+            def _try_v2_decrypt(key_bytes, xor_val, src=None, source_tag=None, key_src=None):
                 """Try to decrypt and return a Flask response or None."""
                 if key_bytes is None:
                     return None
@@ -1747,7 +1778,7 @@ def serve_hardlink_media(decrypted_dir: str, media_info: dict, wxid: str = None)
                     _found_key['aes'] = key_bytes
                     _found_key['xor'] = xor_val
                     return None
-                return _serve_decrypted(dec_path, source_tag)
+                return _serve_decrypted(dec_path, source_tag, key_src=key_src)
 
             # Collect md5 variants to try (base + _h thumbnail)
             # NOTE: CDN md5 bridge and message-DB aeskey search are intentionally
@@ -1771,7 +1802,11 @@ def serve_hardlink_media(decrypted_dir: str, media_info: dict, wxid: str = None)
                 for _try_md5 in _md5_variants:
                     entry = key_map.get(_try_md5)
                     if entry:
-                        rv = _try_v2_decrypt(entry['aes'], entry['xor'])
+                        # 把"这把密钥是哪来的"带进日志（issue #16 新评论）：
+                        # `cache:legacy` = 老版本写的、来源不明；`cache:derived` = 派生真值。
+                        rv = _try_v2_decrypt(entry['aes'], entry['xor'],
+                                             key_src='cache:' + str(entry.get('xor_src')
+                                                                    or 'legacy'))
                         if rv:
                             return rv
 
@@ -1797,7 +1832,9 @@ def serve_hardlink_media(decrypted_dir: str, media_info: dict, wxid: str = None)
                         for _try_md5 in _md5_variants:
                             entry = key_map.get(_try_md5)
                             if entry:
-                                rv = _try_v2_decrypt(entry['aes'], entry['xor'])
+                                rv = _try_v2_decrypt(entry['aes'], entry['xor'],
+                                                     key_src='mmkv:' + str(
+                                                         entry.get('xor_src') or 'legacy'))
                                 if rv:
                                     return rv
                 except Exception as e:
@@ -1808,16 +1845,36 @@ def serve_hardlink_media(decrypted_dir: str, media_info: dict, wxid: str = None)
                 # try the account-level key directly — it should decrypt ALL V2 files.
                 if key_map and not any(key_map.get(m) for m in _md5_variants):
                     fallback_entry = next(iter(key_map.values()))
-                    rv = _try_v2_decrypt(fallback_entry['aes'], fallback_entry['xor'])
+                    rv = _try_v2_decrypt(fallback_entry['aes'], fallback_entry['xor'],
+                                         key_src='account-cache:' + str(
+                                             fallback_entry.get('xor_src') or 'legacy'))
                     if rv:
                         return rv
 
                 # 3) Try live memory extraction from running WeChat
+                #    ⚠️ 可观测性（issue #16 新评论）：这一段原本**完全静默**
+                #    （`find_keys_for_files` 的 `print_fn` 没传 ⇒ 默认是个空函数），
+                #    而它是这条链路里唯一可能跑几十秒的一步 ⇒ 用户只看到"图片解密异常漫长"
+                #    却没有任何日志能指向它。现在把它的日志接出来 + 打印耗时。
                 from engine.services.v2_key_extract import find_keys_for_files, is_wechat_running
-                if is_wechat_running():
+                if not is_wechat_running():
+                    print("  [V2] 内存密钥路径：微信未运行 ⇒ 跳过（这一步需要微信在跑）",
+                          flush=True)
+                else:
+                    def _mem_log(*_a, **_kw):
+                        _kw.setdefault('flush', True)
+                        print(*_a, **_kw)
+
+                    import time as _time
+                    _mem_t0 = _time.time()
+                    print(f"  [V2] 内存密钥路径：开始扫描（变体 {len(_md5_variants)} 个）"
+                          f"—— 这一步可能耗时数十秒", flush=True)
+                    _mem_found_any = False
                     for _try_md5 in _md5_variants:
-                        found = find_keys_for_files(decrypted_dir, wxid, [_try_md5])
+                        found = find_keys_for_files(decrypted_dir, wxid, [_try_md5],
+                                                    print_fn=_mem_log)
                         if _try_md5 in found:
+                            _mem_found_any = True
                             # 尾部 XOR 必须用**派生真值**（`code & 0xFF`）；只有实在拿不到
                             # 派生值时，才回退到既有默认值。写死默认值 ⇒ 凡是
                             # `code & 0xFF != 0xC9` 的账号，图只有上面一小部分能显示、
@@ -1829,9 +1886,12 @@ def serve_hardlink_media(decrypted_dir: str, media_info: dict, wxid: str = None)
                                 # "NOT a derived value" 才真的等于"这次不是按账号派生的"。
                                 print(f"  [V2] 内存找到密钥但无派生 XOR —— 尾部按默认值 "
                                       f"0x{_mem_xor:02X} 解（NOT a derived value）")
-                            rv = _try_v2_decrypt(found[_try_md5], _mem_xor)
+                            rv = _try_v2_decrypt(found[_try_md5], _mem_xor,
+                                                 key_src='memory')
                             if rv:
                                 return rv
+                    print(f"  [V2] 内存密钥路径：结束（{_time.time() - _mem_t0:.1f}s，"
+                          f"{'取到密钥' if _mem_found_any else '未取到密钥'}）", flush=True)
 
             # 3b) wxgf 兜底：原图是微信私有 H.265 图片且本机无解码器时，
             #     改用同目录 WeChat 生成的 _t/_h 缩略图（一般为 JPEG）
@@ -1854,7 +1914,8 @@ def serve_hardlink_media(decrypted_dir: str, media_info: dict, wxid: str = None)
                     except Exception:
                         _dec = None
                     if _dec and os.path.isfile(_dec):
-                        _rv = _serve_decrypted(_dec, source_tag='thumbnail')
+                        _rv = _serve_decrypted(_dec, source_tag='thumbnail',
+                                              key_src='thumbnail')
                         if _rv:
                             print(f"  [WXGF] 原图不可解码，已回退缩略图: {os.path.basename(thumb_src)}")
                             return _rv
