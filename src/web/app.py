@@ -192,6 +192,11 @@ def create_app(decrypted_dir: str, wxid: str = None, db_dir: str = None) -> Flas
     def export_page():
         return render_template('export.html')
 
+    @app.route('/voice-export')
+    def voice_export_page():
+        """按人批量导出语音留言（独立 HTML / 合并音频 / 逐条文件）。"""
+        return render_template('voice_export.html')
+
     @app.route('/pull')
     def pull_page():
         return render_template('pull.html')
