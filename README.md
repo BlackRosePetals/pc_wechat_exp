@@ -1,6 +1,6 @@
 # WeChat EXP 使用手册
 
-> 版本：2.9.20260923 | 更新日期：2026-09-23 | 适用 WeChat 4.x（已测试 4.1.9 / 4.1.10 / 4.1.12.55 / 4.1.15.11）| Windows 10/11
+> 版本：2.9.20260924 | 更新日期：2026-09-24 | 适用 WeChat 4.x（已测试 4.1.9 / 4.1.10 / 4.1.12.55 / 4.1.15.11）| Windows 10/11
 
 ---
 
@@ -954,18 +954,18 @@ wechat_exp.exe import-keys --key "message_0.db=<64位hex>" --force
 ---
 
 > **技术支持**：如遇到问题，请查看 `docs/开发手册.md` 了解技术细节，或提交 Issue 反馈。  
-> **最后更新**：2026-09-23
+> **最后更新**：2026-09-24
 
 ---
 
 ## 下载地址
 
-- 最新版本：`wechat_exp_2.9.20260923.exe` → [点击下载](https://github.com/sunhanaix/pc_wechat_exp/releases/download/v2.9.20260923/wechat_exp_2.9.20260923.exe)
+- 最新版本：`wechat_exp_2.9.20260924.exe` → [点击下载](https://github.com/sunhanaix/pc_wechat_exp/releases/download/v2.9.20260924/wechat_exp_2.9.20260924.exe)
 
 **源码地址**：[https://github.com/sunhanaix/pc_wechat_exp](https://github.com/sunhanaix/pc_wechat_exp)
 
-> **本版校验值**（下载后可比对）：`wechat_exp_2.9.20260923.exe`
-> SHA-256 = `7EE6027D76A7BB35EF5F726CD5C6871AA6E1351F13E7FD2388AB8E7FAFB031BE`
+> **本版校验值**（下载后可比对）：`wechat_exp_2.9.20260924.exe`
+> SHA-256 = `ECBED2FABF19DF51BBA8BBC476FE91EDC7070B5AB7C887804288BBEDD94470C1`
 
 > ⚠️ **发布提醒（发新版时逐条照做，别只改一处）**：
 > ① 用 `build.bat` 构建；② 把 `dist/` 里的产物上传到 GitHub Releases；③ 打上与**该文件名同版本**的 tag（`v<版本>`）；
