@@ -39,6 +39,10 @@ def collect_voice_items(decrypted_dir, *, chats=None, senders=None, start_ts=Non
     chat_filter = set(chats or [])
     sender_filter = set(senders or [])
     items, missing = [], []
+    # 名字解析：调用方没给就自己建（contact.db 的 wxid→备注/昵称）。
+    # 否则导出的 HTML/清单/目录名里到处是 wxid_xxx —— 真机浏览器验收就是这么被用户发现的。
+    name_lookup = name_lookup or build_name_lookup(decrypted_dir)
+    chat_names = build_chat_names(decrypted_dir, own_wxid)
     msg_dir = os.path.join(decrypted_dir, 'message')
     if not os.path.isdir(msg_dir):
         return items, missing
@@ -80,7 +84,8 @@ def collect_voice_items(decrypted_dir, *, chats=None, senders=None, start_ts=Non
                     if sender_filter and sender_name not in sender_filter \
                             and sender_id not in sender_filter:
                         continue
-                    item = VoiceItem(chat_id=chat_id, chat_name=chat_id,
+                    item = VoiceItem(chat_id=chat_id,
+                                     chat_name=chat_names.get(chat_id) or chat_id,
                                      local_id=int(local_id), create_time=int(create_time),
                                      duration_ms=int(xml_ms or 0),
                                      sender_id=sender_id, sender_name=sender_name)
@@ -179,6 +184,52 @@ def _load_chat_list(decrypted_dir, own_wxid=''):
         return chats or []
     except Exception:
         return []
+
+
+def build_name_lookup(decrypted_dir):
+    """建 ``wxid → 显示名`` 解析器（备注名 > 昵称 > 别名 > wxid）。
+
+    一次性读 ``contact.db``（导出场景比逐条查询快得多）；表里没有的 wxid 再退回
+    ``name_resolver.resolve_wxid``（能处理群成员等特殊情况），仍然没有就原样返回 wxid。
+    """
+    names = {}
+    try:
+        import chatlab_export as ce
+        names = dict(ce._load_contact_names(decrypted_dir) or {})
+    except Exception:
+        names = {}
+    cache = {}
+
+    def lookup(wxid):
+        if not wxid:
+            return wxid
+        if wxid in names:
+            return names[wxid]
+        if wxid in cache:
+            return cache[wxid]
+        resolved = wxid
+        try:
+            from engine.services.name_resolver import resolve_wxid
+            got = resolve_wxid(decrypted_dir, wxid)
+            if got:
+                resolved = got
+        except Exception:
+            resolved = wxid
+        cache[wxid] = resolved
+        return resolved
+
+    return lookup
+
+
+def build_chat_names(decrypted_dir, own_wxid=''):
+    """``chat_id → 会话显示名``（群名/联系人名），拿不到就回退成 chat_id。"""
+    mapping = {}
+    for chat in _load_chat_list(decrypted_dir, own_wxid):
+        username = chat.get('username')
+        display = (chat.get('display_name') or '').strip()
+        if username and display and display != username:
+            mapping[username] = display
+    return mapping
 
 
 def _sender_name(sender_id, is_own, own_wxid, own_names, name_lookup):

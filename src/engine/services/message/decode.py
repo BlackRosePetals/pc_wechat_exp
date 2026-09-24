@@ -5,14 +5,34 @@ This module provides the first two steps of the message pipeline:
 2. split_sender_prefix: extract sender wxid from group message prefix
 """
 
-try:
-    import zstandard as zstd
-    _ZSTD_CTX = zstd.ZstdDecompressor()
-except ImportError:
-    _ZSTD_CTX = None
+import threading
 
 # WeChat 4.x zstd compression magic — zstd frame header
 _ZSTD_MAGIC = b'\x28\xb5\x2f\xfd'
+
+# 每个线程各持一个解压上下文（懒创建），见 get_zstd_decompressor 的说明。
+_ZSTD_LOCAL = threading.local()
+
+
+def get_zstd_decompressor():
+    """取**当前线程**的 zstd 解压上下文（懒创建）。
+
+    ⚠️ `zstandard.ZstdDecompressor` **不是线程安全的**：多个线程共用同一个上下文时，
+    解压会返回空结果，甚至直接触发访问违规把整个进程打崩（0xC0000005）。
+    真机复现路径：在 Web 里连续点两次「语音导出」⇒ 两个导出线程同时解压 ⇒ 进程退出。
+
+    这里给每个线程一个独立上下文：既安全，又不需要每次调用都重新创建。
+    返回 None 表示 zstandard 不可用。
+    """
+    ctx = getattr(_ZSTD_LOCAL, 'ctx', None)
+    if ctx is None:
+        try:
+            import zstandard as zstd
+            ctx = zstd.ZstdDecompressor()
+        except ImportError:
+            ctx = False
+        _ZSTD_LOCAL.ctx = ctx
+    return ctx or None
 
 
 def decompress_content(raw_content: bytes) -> bytes:
@@ -33,10 +53,11 @@ def decompress_content(raw_content: bytes) -> bytes:
         return None
     if len(raw_content) < 4 or raw_content[:4] != _ZSTD_MAGIC:
         return raw_content
-    if _ZSTD_CTX is None:
+    ctx = get_zstd_decompressor()
+    if ctx is None:
         return None
     try:
-        return _ZSTD_CTX.decompress(raw_content, max_output_size=50 * 1024 * 1024)
+        return ctx.decompress(raw_content, max_output_size=50 * 1024 * 1024)
     except Exception:
         return None
 

@@ -21,6 +21,20 @@ from .model import plan_merge, safe_filename
 DEFAULT_LAYOUTS = ('html-folder', 'html-inline', 'files', 'merged')
 
 
+def _output_label(ok_items, chats, senders):
+    """给导出目录起个人能读的名字：单个发送者 → 他的名字；否则会话名；再否则参数原样。"""
+    names = sorted({item.sender_name for item in ok_items if item.sender_name})
+    if len(names) == 1:
+        return safe_filename(names[0]) or 'voice'
+    if ok_items and ok_items[0].chat_name and ok_items[0].chat_name != ok_items[0].chat_id:
+        return safe_filename(ok_items[0].chat_name) or 'voice'
+    if chats:
+        return safe_filename(str(chats[0])) or 'voice'
+    if senders:
+        return safe_filename('、'.join(str(s) for s in senders[:2])) or 'voice'
+    return '全部'
+
+
 def export_voices(decrypted_dir, out_root, *, chats=None, senders=None, start_ts=None,
                   end_ts=None, include_other_chats=False, own_wxid='', own_names=None,
                   name_lookup=None, fmt='mp3', layouts=DEFAULT_LAYOUTS,
@@ -47,9 +61,6 @@ def export_voices(decrypted_dir, out_root, *, chats=None, senders=None, start_ts
         fmt = 'wav'
 
     stamp = datetime.now(tz=TZ).strftime('%Y%m%d-%H%M%S')
-    label = safe_filename((chats or senders or ['全部'])[0]) or 'voice'
-    out_dir = os.path.join(out_root, '%s_%s' % (label, stamp))
-    os.makedirs(out_dir, exist_ok=True)
 
     _progress('collect', '正在收集语音消息...')
     items, missing = collect_voice_items(
@@ -63,6 +74,10 @@ def export_voices(decrypted_dir, out_root, *, chats=None, senders=None, start_ts
     for item in failed:
         missing.append({'sender_name': item.sender_name, 'chat_name': item.chat_name,
                         'datetime': item.datetime_text, 'reason': item.error})
+
+    # 输出目录名用**人能读的名字**（只有一个发送者就用他，否则用会话名），而不是 wxid_xxx。
+    out_dir = os.path.join(out_root, '%s_%s' % (_output_label(ok_items, chats, senders), stamp))
+    os.makedirs(out_dir, exist_ok=True)
 
     report = {'count': 0, 'missing': len(missing), 'duration_total_s': 0.0,
               'out_dir': out_dir, 'zip': '', 'merged': [], 'capabilities': caps, 'errors': []}

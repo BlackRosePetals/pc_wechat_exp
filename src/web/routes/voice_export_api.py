@@ -32,6 +32,10 @@ _OUT_ROOT = os.path.join(_DATA_ROOT, 'export', 'voice')
 
 _LAYOUTS = ('html-folder', 'html-inline', 'files', 'merged')
 
+#: 同一时刻只允许一个语音导出。并发导出会同时扫库/解压/编码：
+#: 既浪费 IO，也踩到了共享 zstd 上下文的线程安全问题（真机"连点两次"曾把进程打崩）。
+_EXPORT_BUSY = threading.Lock()
+
 
 def _decrypted_dir():
     return current_app.config.get('DECRYPTED_DIR', '')
@@ -101,8 +105,7 @@ def voice_export():
     push, generate = create_sse_progress()
     own_wxid = current_app.config.get('WXID') or ''
 
-    # 会话可以填 wxid **或显示名**（页面/搜索索引里常见的是显示名）——必须先解析成真实
-    # chat_id 再进采集层：消息表名是 md5(wxid)，拿显示名比对会一条都收不到。
+    # 先做参数/会话解析（这两步可能提前返回，不能占着并发锁）
     chat_id = ''
     if chat_text:
         from engine.services.voice_export.collect import resolve_chat_target
@@ -115,6 +118,13 @@ def voice_export():
             return jsonify({'error': 'chat_not_found',
                             'message': '未找到会话：%s' % chat_text}), 404
         chat_id = resolved
+
+    # 会话可以填 wxid **或显示名**（页面/搜索索引里常见的是显示名）——必须先解析成真实
+    # chat_id 再进采集层：消息表名是 md5(wxid)，拿显示名比对会一条都收不到。
+    if not _EXPORT_BUSY.acquire(blocking=False):
+        return jsonify({'error': 'busy',
+                        'message': '已有一个语音导出正在进行中，请等它完成（或点「停止」取消）后再试。'
+                        }), 409
 
     cancel = {'stop': False}
     opts = {
@@ -152,6 +162,8 @@ def voice_export():
             })
         except Exception as exc:
             push.error(str(exc))
+        finally:
+            _EXPORT_BUSY.release()
 
     threading.Thread(target=_worker, daemon=True).start()
     return generate()

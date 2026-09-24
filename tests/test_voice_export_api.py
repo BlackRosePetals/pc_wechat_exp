@@ -119,3 +119,39 @@ def test_unknown_chat_returns_404(client, monkeypatch):
     resp = client.post('/api/export/voice', json={'chat': '不存在的人'})
     assert resp.status_code == 404
     assert resp.get_json()['error'] == 'chat_not_found'
+
+
+def test_concurrent_export_is_rejected_with_409(client):
+    """并发导出必须被礼貌拒绝。
+
+    真机现象：连点两次「导出」时进程直接退出（根因是共享 zstd 上下文的线程安全问题，
+    已在 collect/pipeline 侧修掉）。这里额外锁住"同时只允许一个导出"的行为。
+    """
+    assert api._EXPORT_BUSY.acquire(blocking=False), '测试前置：应能拿到锁'
+    try:
+        resp = client.post('/api/export/voice', json={'chat': 'wxid_demo_1a2b'})
+        assert resp.status_code == 409
+        body = resp.get_json()
+        assert body['error'] == 'busy' and '正在进行' in body['message']
+    finally:
+        api._EXPORT_BUSY.release()
+
+
+def test_busy_lock_is_released_after_export(client, monkeypatch):
+    """导出结束后必须释放锁，否则第二次导出永远 409。"""
+    def fake_export(opts, push, cancel):
+        return {'count': 0, 'missing': 0, 'duration_total_s': 0.0, 'out_dir': 'd',
+                'zip': '', 'merged': [], 'errors': []}
+
+    monkeypatch.setattr(api, '_do_export', fake_export)
+    first = client.post('/api/export/voice', json={'chat': 'wxid_demo_1a2b'})
+    assert first.status_code == 200
+    # 消费完 SSE，等后台线程收尾
+    first.get_data()
+    for _ in range(50):
+        if not api._EXPORT_BUSY.locked():
+            break
+        __import__('time').sleep(0.05)
+    assert not api._EXPORT_BUSY.locked(), '导出结束后锁必须释放'
+    second = client.post('/api/export/voice', json={'chat': 'wxid_demo_1a2b'})
+    assert second.status_code == 200, '第二次导出不应再被 409'

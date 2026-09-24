@@ -18,11 +18,8 @@ from engine.services.message.media_resolve import (
     _resolve_media_from_xml
 )
 
-try:
-    import zstandard as zstd
-    _ZSTD_CTX = zstd.ZstdDecompressor()
-except ImportError:
-    _ZSTD_CTX = None
+# zstd 解压上下文按线程各持一个（zstandard 的上下文不是线程安全的，见 decode.py）。
+from engine.services.message.decode import get_zstd_decompressor  # noqa: E402
 
 # WeChat 4.x uses high bits of local_type for flags (e.g. type 49 = 0x500000031).
 # The actual message type is in the lower 16 bits.
@@ -41,10 +38,11 @@ def _zstd_decompress_xml(data: bytes) -> str:
 
     Returns decompressed XML string, or None on failure.
     """
-    if _ZSTD_CTX is None or len(data) < 4 or data[:4] != _ZSTD_MAGIC:
+    ctx = get_zstd_decompressor()
+    if ctx is None or len(data) < 4 or data[:4] != _ZSTD_MAGIC:
         return None
     try:
-        raw = _ZSTD_CTX.decompress(data, max_output_size=50 * 1024 * 1024)
+        raw = ctx.decompress(data, max_output_size=50 * 1024 * 1024)
     except Exception:
         return None
 
@@ -76,10 +74,11 @@ def _zstd_decompress_raw(data: bytes) -> bytes:
     Used by _build_sender_map to extract wxid from the ``sender:\\n`` prefix
     that _zstd_decompress_xml normally strips.
     """
-    if _ZSTD_CTX is None or len(data) < 4 or data[:4] != _ZSTD_MAGIC:
+    ctx = get_zstd_decompressor()
+    if ctx is None or len(data) < 4 or data[:4] != _ZSTD_MAGIC:
         return None
     try:
-        return _ZSTD_CTX.decompress(data, max_output_size=50 * 1024 * 1024)
+        return ctx.decompress(data, max_output_size=50 * 1024 * 1024)
     except Exception:
         return None
 

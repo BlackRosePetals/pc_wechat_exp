@@ -84,6 +84,7 @@
     if (el('progress-container')) el('progress-container').style.display = '';
     if (el('result-container')) el('result-container').style.display = 'none';
     if (el('btn-cancel')) el('btn-cancel').style.display = '';
+    if (el('btn-run')) { el('btn-run').disabled = true; }   // 防连点：并发导出会白干活
     setProgress(0.02, '正在准备...');
 
     sse = new SseProgress('/api/export/voice', {
@@ -100,6 +101,7 @@
         }
         setProgress(1, '完成');
         if (el('btn-cancel')) el('btn-cancel').style.display = 'none';
+        if (el('btn-run')) el('btn-run').disabled = false;
         var html = '<p>共导出 <b>' + (d.count || 0) + '</b> 条，总时长约 '
           + Math.round((d.duration_total_s || 0) / 60) + ' 分钟；缺失 <b>' + (d.missing || 0)
           + '</b> 条（见 missing.csv，可重跑一次「一键备份」补齐）。</p>';
@@ -118,11 +120,13 @@
       onError: function (err) {
         setProgress(1, '失败');
         if (el('btn-cancel')) el('btn-cancel').style.display = 'none';
+        if (el('btn-run')) el('btn-run').disabled = false;
         log('✗ ' + err.message, 'error');
       },
       onSelect: function (data) {
         // 会话名匹配到多个：让用户点选（不猜）
         if (el('btn-cancel')) el('btn-cancel').style.display = 'none';
+        if (el('btn-run')) el('btn-run').disabled = false;
         var list = (data && data.matches) || [];
         var html = '<p>「' + (el('cfg-chat') ? el('cfg-chat').value : '')
           + '」匹配到多个会话，请选择具体哪一个：</p>';
