@@ -117,7 +117,7 @@ def test_export_voices_inline_html_and_progress(tmp_path):
                         progress_fn=lambda stage, msg: seen.append(stage))
     assert os.path.isfile(os.path.join(rep['out_dir'], 'all-in-one.html'))
     assert rep['zip'] == ''
-    assert seen and 'done' in seen
+    assert seen and 'finish' in seen
 
 
 def test_export_voices_cancel_still_writes_manifest(tmp_path):
@@ -125,3 +125,19 @@ def test_export_voices_cancel_still_writes_manifest(tmp_path):
     rep = export_voices(dec, str(tmp_path / 'e6'), chats=[CHAT], fmt='wav',
                         layouts=('files',), cancel=lambda: True)
     assert os.path.isfile(os.path.join(rep['out_dir'], 'manifest.csv'))
+
+
+def test_export_voices_never_uses_done_as_progress_stage(tmp_path):
+    """回归：`sse.py` 把 stage='done' 当作**完成事件**（不带 result）。
+
+    真机浏览器验收踩过：pipeline 用 `_progress('done', ...)` 推最后一行进度 ⇒ 前端
+    收到一个没有 count/zip_url 的 done，提前渲染"共导出 0 条"并失去下载链接。
+    进度行的 stage 必须避开 'done'（这里用 'finish'）。
+    """
+    stages = []
+    dec = _mk(tmp_path)
+    export_voices(dec, str(tmp_path / 'e7'), chats=[CHAT], fmt='wav',
+                  layouts=('files',), zip_output=False,
+                  progress_fn=lambda stage, message: stages.append(stage))
+    assert 'done' not in stages, '进度回调不得使用 done 这个 stage'
+    assert 'finish' in stages

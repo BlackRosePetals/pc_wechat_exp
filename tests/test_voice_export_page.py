@@ -46,6 +46,18 @@ def test_js_wires_status_senders_and_sse():
     assert 'm4a' in text and 'zip_url' in text
 
 
+def test_js_handles_select_and_ignores_empty_done():
+    """回归（真机浏览器验收发现的两件事）：
+
+    ① 会话名有多个候选时要能点选（`onSelect`）；
+    ② `done` 事件的业务结果包在 `result` 里（项目惯例 `data.result || data`）——
+       少了解包就会把**真结果也忽略掉**，页面永远不显示结果（真机表现为"一直转圈"）。
+    """
+    text = _read('src/web/static/js/voice-export.js')
+    assert 'onSelect' in text and 'data-username' in text
+    assert 'payload.result' in text, 'done 载荷必须解包 result（见 web/sse.py 与 wizard.js）'
+
+
 def test_entry_points_link_to_voice_export():
     assert '/voice-export' in _read('src/web/templates/dashboard.html')
     assert '/voice-export' in _read('src/web/templates/export.html')

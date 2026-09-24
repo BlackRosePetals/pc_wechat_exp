@@ -74,3 +74,48 @@ def test_download_strips_path_traversal(client, tmp_path, monkeypatch):
     monkeypatch.setattr(api, '_OUT_ROOT', str(out_root))
     resp = client.get('/api/export/voice/download/pack.zip')
     assert resp.status_code == 200 and resp.data.startswith(b'PK')
+
+
+def test_display_name_is_resolved_to_real_chat_id(client, monkeypatch):
+    """会话可以填显示名：接口必须先解析成真实 wxid 再进采集层。
+
+    回归：真机浏览器里列表给的会话名是**显示名**，而采集层按 md5(wxid) 过滤 ⇒
+    不解析就会一条都收不到（表现为"共导出 0 条"）。
+    """
+    import engine.services.voice_export.collect as collect_mod
+
+    monkeypatch.setattr(collect_mod, 'resolve_chat_target',
+                        lambda dec, text, own='': ('wxid_demo_1a2b', []))
+    seen = {}
+
+    def fake_export(opts, push, cancel):
+        seen['chats'] = opts['chats']
+        return {'count': 1, 'missing': 0, 'duration_total_s': 1.0, 'out_dir': 'd',
+                'zip': '', 'merged': [], 'errors': []}
+
+    monkeypatch.setattr(api, '_do_export', fake_export)
+    resp = client.post('/api/export/voice', json={'chat': '张三', 'format': 'wav'})
+    assert resp.status_code == 200
+    assert seen['chats'] == ['wxid_demo_1a2b'], '显示名必须被解析成真实 wxid'
+
+
+def test_ambiguous_chat_emits_select_event(client, monkeypatch):
+    import engine.services.voice_export.collect as collect_mod
+
+    monkeypatch.setattr(collect_mod, 'resolve_chat_target',
+                        lambda dec, text, own='': (None, [
+                            {'username': 'wxid_a_1a2b', 'display_name': '张三', 'msg_count': 3},
+                            {'username': 'wxid_b_3c4d', 'display_name': '张三（同事）', 'msg_count': 1}]))
+    resp = client.post('/api/export/voice', json={'chat': '张三'})
+    body = resp.get_data(as_text=True)
+    assert resp.status_code == 200
+    assert 'event: select' in body and 'wxid_a_1a2b' in body
+
+
+def test_unknown_chat_returns_404(client, monkeypatch):
+    import engine.services.voice_export.collect as collect_mod
+
+    monkeypatch.setattr(collect_mod, 'resolve_chat_target', lambda dec, text, own='': ('', []))
+    resp = client.post('/api/export/voice', json={'chat': '不存在的人'})
+    assert resp.status_code == 404
+    assert resp.get_json()['error'] == 'chat_not_found'

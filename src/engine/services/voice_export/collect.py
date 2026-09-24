@@ -132,6 +132,55 @@ def _missing(item, reason):
             'datetime': item.datetime_text, 'reason': reason}
 
 
+def resolve_chat_target(decrypted_dir, text, own_wxid=''):
+    """把用户输入的会话（**wxid 或显示名**）解析成真实 chat_id。
+
+    页面上的会话名、搜索索引里的 chat_id、CLI 上人手打的名字都可能是**显示名**
+    （例如"张三"），而消息表名是 ``md5(wxid)`` —— 直接拿显示名去比对会一条都收不到
+    （真机浏览器验收就踩到了这个）。
+
+    Returns:
+        ``(chat_id, matches)``：唯一命中时 ``chat_id`` 为 wxid、``matches`` 为空；
+        多个候选时 ``chat_id`` 为 None、``matches`` 为候选列表（调用方让用户选，不猜）。
+    """
+    text = (text or '').strip()
+    if not text:
+        return None, []
+    chats = _load_chat_list(decrypted_dir, own_wxid)
+    if not chats:
+        return text, []                      # 拿不到清单时不挡路，按原样交给采集层
+    lowered = text.lower()
+    for chat in chats:                       # 1) 精确匹配（wxid / 显示名 / 群名）
+        if chat.get('username') == text or chat.get('display_name') == text:
+            return chat['username'], []
+    fuzzy = [c for c in chats
+             if lowered in str(c.get('display_name', '')).lower()
+             or lowered in str(c.get('username', '')).lower()]
+    if len(fuzzy) == 1:
+        return fuzzy[0]['username'], []
+    if not fuzzy:
+        return text, []
+    return None, [{'username': c['username'], 'display_name': c.get('display_name') or c['username'],
+                   'msg_count': c.get('msg_count') or 0} for c in fuzzy[:50]]
+
+
+def _load_chat_list(decrypted_dir, own_wxid=''):
+    """轻量会话清单（seconds 级）；失败时回退完整扫描。"""
+    try:
+        from chatlab_pull_server import fast_chat_list
+        chats = fast_chat_list(decrypted_dir, own_wxid=own_wxid)
+        if chats:
+            return chats
+    except Exception:
+        pass
+    try:
+        from chat_list import scan_chats
+        chats, _id_to_name, _name_to_id = scan_chats(decrypted_dir)
+        return chats or []
+    except Exception:
+        return []
+
+
 def _sender_name(sender_id, is_own, own_wxid, own_names, name_lookup):
     if is_own or (own_wxid and sender_id == own_wxid) or (sender_id and sender_id in (own_names or ())):
         return '我'

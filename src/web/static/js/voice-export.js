@@ -89,7 +89,15 @@
     sse = new SseProgress('/api/export/voice', {
       body: body,
       onProgress: function (d) { setProgress(d.progress, d.detail); log(d.detail || ''); },
-      onDone: function (d) {
+      onDone: function (payload) {
+        // SSE 的 done 事件把业务结果包在 result 里（见 web/sse.py；项目惯例是
+        // `data.result || data`）。若某层把普通进度行也用 stage='done' 推出来，
+        // 那种载荷既没有 result 也没有 count ⇒ 直接忽略，避免渲染"导出 0 条"的假结果。
+        var d = (payload && payload.result) || payload || {};
+        if ((!payload || payload.result === undefined) && d.count === undefined) {
+          log(d.detail || '');
+          return;
+        }
         setProgress(1, '完成');
         if (el('btn-cancel')) el('btn-cancel').style.display = 'none';
         var html = '<p>共导出 <b>' + (d.count || 0) + '</b> 条，总时长约 '
@@ -111,6 +119,27 @@
         setProgress(1, '失败');
         if (el('btn-cancel')) el('btn-cancel').style.display = 'none';
         log('✗ ' + err.message, 'error');
+      },
+      onSelect: function (data) {
+        // 会话名匹配到多个：让用户点选（不猜）
+        if (el('btn-cancel')) el('btn-cancel').style.display = 'none';
+        var list = (data && data.matches) || [];
+        var html = '<p>「' + (el('cfg-chat') ? el('cfg-chat').value : '')
+          + '」匹配到多个会话，请选择具体哪一个：</p>';
+        list.forEach(function (m) {
+          html += '<p><a href="#" class="btn" data-username="' + m.username + '">'
+            + m.display_name + '（' + (m.msg_count || 0) + ' 条）</a></p>';
+        });
+        if (el('result-content')) el('result-content').innerHTML = html;
+        if (el('result-container')) el('result-container').style.display = '';
+        document.querySelectorAll('#result-content a[data-username]').forEach(function (a) {
+          a.addEventListener('click', function (ev) {
+            ev.preventDefault();
+            el('cfg-chat').value = a.getAttribute('data-username');
+            if (el('result-container')) el('result-container').style.display = 'none';
+            start();
+          });
+        });
       }
     });
     sse.start();

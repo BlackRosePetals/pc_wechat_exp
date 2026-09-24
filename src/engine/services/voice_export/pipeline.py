@@ -104,6 +104,8 @@ def export_voices(decrypted_dir, out_root, *, chats=None, senders=None, start_ts
     if zip_output:
         _progress('zip', '正在打包...')
         report['zip'] = layout.make_zip(out_dir, out_dir.rstrip('\\/') + '.zip')
-    _progress('done', '完成：%d 条，缺失 %d 条，总时长 %.1f 分钟'
+    # 注意：这里**不能**用 'done' 作为 stage —— sse.py 会把 stage='done' 当成完成事件
+    # （不带 result），前端会据此提前渲染"导出完成：0 条"并失去下载链接。
+    _progress('finish', '完成：%d 条，缺失 %d 条，总时长 %.1f 分钟'
               % (report['count'], report['missing'], report['duration_total_s'] / 60.0))
     return report

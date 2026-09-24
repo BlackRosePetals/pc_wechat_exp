@@ -89,9 +89,9 @@ def _do_export(opts, push, cancel):
 @voice_export_bp.route('', methods=['POST'], strict_slashes=False)
 def voice_export():
     data = request.get_json(silent=True) or {}
-    chat = (data.get('chat') or '').strip()
+    chat_text = (data.get('chat') or '').strip()
     senders = [str(s) for s in (data.get('senders') or []) if str(s).strip()]
-    if not chat and not senders:
+    if not chat_text and not senders:
         return jsonify({'error': 'bad_request', 'message': '至少要选择会话或发送者'}), 400
     decrypted = _decrypted_dir()
     if not decrypted or not os.path.isdir(decrypted):
@@ -99,15 +99,32 @@ def voice_export():
                         'message': '还没有解密/备份数据，请先执行「一键备份」'}), 400
 
     push, generate = create_sse_progress()
+    own_wxid = current_app.config.get('WXID') or ''
+
+    # 会话可以填 wxid **或显示名**（页面/搜索索引里常见的是显示名）——必须先解析成真实
+    # chat_id 再进采集层：消息表名是 md5(wxid)，拿显示名比对会一条都收不到。
+    chat_id = ''
+    if chat_text:
+        from engine.services.voice_export.collect import resolve_chat_target
+        resolved, matches = resolve_chat_target(decrypted, chat_text, own_wxid)
+        if matches:
+            push.select([{'username': m['username'], 'display_name': m['display_name'],
+                          'msg_count': m.get('msg_count', 0)} for m in matches])
+            return generate()
+        if not resolved:
+            return jsonify({'error': 'chat_not_found',
+                            'message': '未找到会话：%s' % chat_text}), 404
+        chat_id = resolved
+
     cancel = {'stop': False}
     opts = {
         'decrypted_dir': decrypted,
-        'chats': [chat] if chat else None,
+        'chats': [chat_id] if chat_id else None,
         'senders': senders or None,
         'start_ts': data.get('start_ts'),
         'end_ts': data.get('end_ts'),
         'include_other_chats': bool(data.get('include_other_chats')),
-        'own_wxid': current_app.config.get('WXID') or '',
+        'own_wxid': own_wxid,
         'name_lookup': current_app.config.get('NAME_LOOKUP'),
         'fmt': data.get('format') or 'mp3',
         'layouts': data.get('layouts'),

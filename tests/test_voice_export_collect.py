@@ -124,3 +124,52 @@ def test_collect_reads_xml_voicelength_as_duration_fallback(tmp_path):
     grandpa = [it for it in items if it.sender_name == '爷爷'][0]
     assert grandpa.duration_ms == 8340
     assert grandpa.duration_s == pytest.approx(8.34)
+
+
+class TestResolveChatTarget:
+    """会话名（显示名）→ 真实 wxid。真机浏览器验收踩过：不解析就一条都收不到。"""
+
+    CHATS = [
+        {'username': 'wxid_demo_1a2b', 'display_name': '张三', 'msg_count': 5},
+        {'username': 'wxid_other_5e6f', 'display_name': '张三（同事）', 'msg_count': 2},
+        {'username': 'wxid_group_9z8y', 'display_name': '项目群', 'msg_count': 9},
+    ]
+
+    def _patch(self, monkeypatch):
+        from engine.services.voice_export import collect as collect_mod
+        monkeypatch.setattr(collect_mod, '_load_chat_list', lambda d, own='': self.CHATS)
+
+    def test_exact_username_and_display_name(self, monkeypatch):
+        from engine.services.voice_export.collect import resolve_chat_target
+        self._patch(monkeypatch)
+        assert resolve_chat_target('d', 'wxid_demo_1a2b') == ('wxid_demo_1a2b', [])
+        assert resolve_chat_target('d', '项目群') == ('wxid_group_9z8y', [])
+
+    def test_unique_fuzzy_match_resolves(self, monkeypatch):
+        from engine.services.voice_export.collect import resolve_chat_target
+        self._patch(monkeypatch)
+        assert resolve_chat_target('d', '项目') == ('wxid_group_9z8y', [])
+
+    def test_ambiguous_returns_candidates_without_guessing(self, monkeypatch):
+        from engine.services.voice_export.collect import resolve_chat_target
+        self._patch(monkeypatch)
+        # '张' 同时命中「张三」和「张三（同事）」⇒ 不猜，交给用户选
+        chat_id, matches = resolve_chat_target('d', '张')
+        assert chat_id is None and len(matches) == 2
+        assert {m['username'] for m in matches} == {'wxid_demo_1a2b', 'wxid_other_5e6f'}
+
+    def test_exact_display_name_wins_over_similar_names(self, monkeypatch):
+        from engine.services.voice_export.collect import resolve_chat_target
+        self._patch(monkeypatch)
+        # 精确命中显示名时直接用它（'张三（同事）' 是另一个名字，不算歧义）
+        assert resolve_chat_target('d', '张三') == ('wxid_demo_1a2b', [])
+
+    def test_unknown_passes_through_unchanged(self, monkeypatch):
+        from engine.services.voice_export.collect import resolve_chat_target
+        self._patch(monkeypatch)
+        assert resolve_chat_target('d', '查无此人') == ('查无此人', [])
+
+    def test_empty_text_is_noop(self, monkeypatch):
+        from engine.services.voice_export.collect import resolve_chat_target
+        self._patch(monkeypatch)
+        assert resolve_chat_target('d', '  ') == (None, [])

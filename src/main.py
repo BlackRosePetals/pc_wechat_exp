@@ -724,6 +724,16 @@ def cmd_voice_export(args):
         print('至少要给 --chat 或 --sender 之一（例：--chat 张三 --sender 爷爷）')
         print('提示：不知道会话怎么写时，先用 `--chat <名字>` 不带 --sender，会把该会话里所有人的语音都导出。')
         return 2
+    if chat:
+        # --chat 允许填显示名（人手打的名字），先解析成真实 wxid
+        from engine.services.voice_export.collect import resolve_chat_target
+        resolved, matches = resolve_chat_target(decrypted, chat)
+        if matches:
+            print('「%s」匹配到多个会话，请改用 wxid 精确指定其中之一：' % chat)
+            for item in matches[:20]:
+                print('  %s  %s' % (item['username'], item['display_name']))
+            return 2
+        chat = resolved or chat
 
     layouts = tuple(x.strip() for x in (getattr(args, 'layout', '') or '').split(',') if x.strip())
     if not layouts:
