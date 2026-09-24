@@ -109,6 +109,13 @@ def create_app(decrypted_dir: str, wxid: str = None, db_dir: str = None) -> Flas
 
     _register_blueprint(app, 'routes.export_api', _register_export_bp)
 
+    # New: 语音导出 API（按人批量导出语音留言）
+    def _register_voice_export_bp():
+        from .routes.voice_export_api import voice_export_bp
+        app.register_blueprint(voice_export_bp)
+
+    _register_blueprint(app, 'routes.voice_export_api', _register_voice_export_bp)
+
     # Avatar API
     def _register_avatar_bp():
         from .routes.avatar_api import avatar_bp

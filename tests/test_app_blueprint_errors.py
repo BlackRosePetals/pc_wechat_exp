@@ -225,5 +225,5 @@ class TestNormalPathIsUntouched:
         app = _build_app(tmp_path)
         assert tuple(app.blueprints) == (
             'api', 'reports', 'wrapped', 'backup_api', 'export_api',
-            'avatar', 'cleanup', 'keys_api', 'pull_api', 'search_api',
+            'voice_export_api', 'avatar', 'cleanup', 'keys_api', 'pull_api', 'search_api',
         )
