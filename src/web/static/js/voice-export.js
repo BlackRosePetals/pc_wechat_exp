@@ -72,6 +72,7 @@
       merge_by: el('cfg-merge-by') ? el('cfg-merge-by').value : 'person',
       split: el('cfg-split') ? el('cfg-split').value : 'single',
       gap_s: parseFloat(el('cfg-gap') ? el('cfg-gap').value : '1') || 0,
+      mp3_quality: parseInt(el('cfg-quality') ? el('cfg-quality').value : '7', 10) || 7,
       include_other_chats: el('cfg-other-chats') ? el('cfg-other-chats').checked : false,
       keep_silk: el('cfg-keep-silk') ? el('cfg-keep-silk').checked : false
     };

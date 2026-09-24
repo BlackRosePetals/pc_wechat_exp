@@ -44,8 +44,13 @@ def encode_wav(pcm: bytes, out_path: str, sample_rate: int) -> str:
     return out_path
 
 
-def encode_mp3(pcm: bytes, out_path: str, sample_rate: int, bitrate: int = 64):
-    """MP3（lameenc）。lameenc 不可用时返回 None，由调用方决定降级。"""
+def encode_mp3(pcm: bytes, out_path: str, sample_rate: int, bitrate: int = 64,
+               quality: int = 5):
+    """MP3（lameenc）。lameenc 不可用时返回 None，由调用方决定降级。
+
+    ``quality``：LAME 的 0（最好/最慢）~ 9（最快）。语音场景默认 5；
+    想更快可以给 7~9（体积与听感差异很小，见 CLI 的 ``--mp3-quality``）。
+    """
     lameenc = _import_lameenc()
     if lameenc is None or not pcm:
         return None
@@ -53,7 +58,7 @@ def encode_mp3(pcm: bytes, out_path: str, sample_rate: int, bitrate: int = 64):
     enc.set_bit_rate(bitrate)
     enc.set_in_sample_rate(sample_rate)
     enc.set_channels(1)
-    enc.set_quality(5)
+    enc.set_quality(int(quality))
     data = enc.encode(pcm) + enc.flush()
     with open(out_path, 'wb') as f:
         f.write(data)

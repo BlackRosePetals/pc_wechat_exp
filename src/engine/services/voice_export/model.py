@@ -60,6 +60,7 @@ class VoiceItem:
     sender_id: str = ''             # wxid（可能为空）
     sender_name: str = ''           # 备注名 / 昵称 / '我'
     silk_path: str = ''             # 抽取到的 .silk；空 = 缺失
+    pcm_path: str = ''              # 解码后的 PCM 缓存路径（见 pcm_cache，避免重复解码）
     sample_rate: int = DEFAULT_SAMPLE_RATE
     duration_s: float = 0.0         # **以 PCM 长度为准**
     out_name: str = ''              # 写出后的文件名（不含扩展名）

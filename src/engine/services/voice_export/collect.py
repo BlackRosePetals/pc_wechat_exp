@@ -24,12 +24,16 @@ ZSTD_MAGIC = b'\x28\xb5\x2f\xfd'
 
 def collect_voice_items(decrypted_dir, *, chats=None, senders=None, start_ts=None, end_ts=None,
                         include_other_chats=False, own_wxid='', own_names=None,
-                        name_lookup=None, progress_fn=None, extract=True, workers=1):
+                        name_lookup=None, progress_fn=None, extract=True, workers=1,
+                        pcm_cache=None):
     """采集语音消息。
 
     Args:
         extract: 是否抽取 SILK 并解码出真实时长/采样率（False 时只用 XML 时长兜底）。
         workers: 解码阶段的并行线程数（解码是子进程 + 只读 DB，可并行）。
+        pcm_cache: :class:`~engine.services.voice_export.pcm_cache.PcmCache`；
+            给了就把解码结果缓存下来，后面的逐条写出/合并/内嵌 HTML 直接复用，
+            不必再解码第二、第三次（真机测量：不缓存时同一条语音被解码 2~4 次）。
 
     Returns:
         ``(items, missing)``：``items`` 为 :class:`VoiceItem` 列表（按时间排序，解码失败者带 ``error``）；
@@ -112,23 +116,26 @@ def collect_voice_items(decrypted_dir, *, chats=None, senders=None, start_ts=Non
         if workers and workers > 1:
             from concurrent.futures import ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=int(workers)) as pool:
-                list(pool.map(_decode_item, items))
+                list(pool.map(lambda it: _decode_item(it, pcm_cache), items))
         else:
             for item in items:
-                _decode_item(item)
+                _decode_item(item, pcm_cache)
 
     items.sort(key=lambda i: (i.create_time, i.local_id))
     return items, missing
 
 
-def _decode_item(item):
-    """解码一条语音，回填真实采样率与时长（**以 PCM 长度为准**）。"""
+def _decode_item(item, pcm_cache=None):
+    """解码一条语音，回填真实采样率与时长（**以 PCM 长度为准**），并按需缓存 PCM。"""
     pcm = silk_to_pcm(item.silk_path)
     if not pcm:
         item.error = 'SILK 解码失败'
         return item
     item.sample_rate = pick_sample_rate(len(pcm), item.duration_ms)
     item.duration_s = len(pcm) / 2.0 / item.sample_rate
+    if pcm_cache is not None:
+        item.pcm_path = pcm_cache.put(pcm_cache.key_for(item.create_time, item.local_id),
+                                      pcm) or ''
     return item
 
 

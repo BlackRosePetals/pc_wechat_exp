@@ -84,6 +84,7 @@ def _do_export(opts, push, cancel):
         merge_by=opts.get('merge_by') or 'person', split=opts.get('split') or 'single',
         gap_s=float(opts.get('gap_s') or 1.0), keep_silk=bool(opts.get('keep_silk')),
         workers=int(opts.get('workers') or 4),
+        mp3_quality=int(opts.get('mp3_quality') or 7),
         zip_output=bool(opts.get('zip_output', True)),
         progress_fn=lambda stage, message: push(stage, message, 0.5),
         cancel=lambda: bool(cancel.get('stop')))
@@ -143,6 +144,7 @@ def voice_export():
         'gap_s': data.get('gap_s'),
         'keep_silk': data.get('keep_silk'),
         'workers': data.get('workers'),
+        'mp3_quality': data.get('mp3_quality'),
         'zip_output': data.get('zip_output', True),
     }
 
