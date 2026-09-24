@@ -5,6 +5,8 @@ import re
 import sqlite3
 import mimetypes
 import struct
+import subprocess
+import sys
 from flask import abort, send_file
 
 STORAGE_CANDIDATES = [
