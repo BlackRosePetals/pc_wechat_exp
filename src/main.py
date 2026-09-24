@@ -698,6 +698,74 @@ def _export_contacts_cmd(args):
         print("提示: 没有匹配的通讯录记录。若通讯录为空，请先执行 backup 提取联系人数据。")
 
 
+def _parse_date_arg(text, end_of_day=False):
+    """``YYYY-MM-DD`` → 本地时区时间戳（``end_of_day`` 取当天 23:59:59）。"""
+    if not text:
+        return None
+    from datetime import datetime
+    from engine.constants import TZ
+    dt = datetime.strptime(str(text).strip(), '%Y-%m-%d').replace(tzinfo=TZ)
+    if end_of_day:
+        dt = dt.replace(hour=23, minute=59, second=59)
+    return int(dt.timestamp())
+
+
+def cmd_voice_export(args):
+    """按人批量导出语音留言（独立 HTML / 合并音频 / 逐条文件）。"""
+    from engine.services.voice_export import export_voices
+
+    decrypted = getattr(args, 'decrypted_dir', None) or _resolve_decrypted_dir()
+    if not os.path.isdir(decrypted):
+        _print_missing_dir(decrypted)
+        return 1
+    chat = (getattr(args, 'chat', '') or '').strip()
+    senders = [s for s in (getattr(args, 'sender', None) or []) if s]
+    if not chat and not senders:
+        print('至少要给 --chat 或 --sender 之一（例：--chat 张三 --sender 爷爷）')
+        print('提示：不知道会话怎么写时，先用 `--chat <名字>` 不带 --sender，会把该会话里所有人的语音都导出。')
+        return 2
+
+    layouts = tuple(x.strip() for x in (getattr(args, 'layout', '') or '').split(',') if x.strip())
+    if not layouts:
+        layouts = ('html-folder', 'html-inline', 'files', 'merged')
+    out_root = getattr(args, 'out', None) or os.path.join(_project_root(), 'export', 'voice')
+
+    def _progress(stage, message):
+        print('[%s] %s' % (stage, message), flush=True)
+
+    try:
+        report = export_voices(
+            decrypted, out_root,
+            chats=[chat] if chat else None,
+            senders=senders or None,
+            start_ts=_parse_date_arg(getattr(args, 'from_date', None)),
+            end_ts=_parse_date_arg(getattr(args, 'to_date', None), end_of_day=True),
+            include_other_chats=bool(getattr(args, 'include_other_chats', False)),
+            fmt=(getattr(args, 'format', None) or 'mp3'),
+            layouts=layouts,
+            merge_by=(getattr(args, 'merge_by', None) or 'person'),
+            split=(getattr(args, 'split', None) or 'single'),
+            gap_s=float(getattr(args, 'gap', 1.0) or 0.0),
+            keep_silk=bool(getattr(args, 'keep_silk', False)),
+            workers=int(getattr(args, 'workers', 4) or 1),
+            zip_output=bool(getattr(args, 'zip_output', True)),
+            progress_fn=_progress)
+    except RuntimeError as exc:                     # 例如选了 m4a 但没有 ffmpeg
+        print('✗ %s' % exc)
+        return 3
+
+    print('完成：%d 条，缺失 %d 条，总时长 %.1f 分钟'
+          % (report['count'], report['missing'], report['duration_total_s'] / 60.0))
+    print('输出目录：%s' % report['out_dir'])
+    if report.get('zip'):
+        print('打包：%s' % report['zip'])
+    for err in report.get('errors', []):
+        print('提示：%s' % err)
+    if report['missing']:
+        print('缺失明细见 missing.csv（通常是该条不在当前备份里，重跑一次「一键备份」可补齐）')
+    return 0
+
+
 def cmd_export(args):
     """Export chat data in various formats."""
     mode = args.mode
@@ -1000,6 +1068,33 @@ def main():
     ep.add_argument('--excel', help='员工 Excel 文件路径 (employee 模式)')
     ep.add_argument('--decrypted-dir', help='解密后的数据目录')
     ep.add_argument('--db-dir', help='微信 db_storage 目录')
+
+    # voice-export（按人批量导出语音留言）
+    vp = sub.add_parser('voice-export',
+                        help='按人批量导出语音留言（独立 HTML / 合并音频 / 逐条音频文件）')
+    vp.add_argument('--chat', default='', help='会话 wxid 或显示名')
+    vp.add_argument('--sender', action='append', default=[],
+                    help='发送者（可重复；留空 = 该会话全部人）')
+    vp.add_argument('--include-other-chats', action='store_true',
+                    help='把该人在其它会话里的语音也一起导出（全库扫描，较慢）')
+    vp.add_argument('--from', dest='from_date', default=None, help='开始日期 YYYY-MM-DD')
+    vp.add_argument('--to', dest='to_date', default=None, help='结束日期 YYYY-MM-DD')
+    vp.add_argument('--format', choices=['mp3', 'wav', 'm4a'], default='mp3',
+                    help='音频格式（m4a 需要 ffmpeg；默认 mp3）')
+    vp.add_argument('--layout', default='html-folder,html-inline,files,merged',
+                    help='逗号分隔：html-folder,html-inline,files,merged')
+    vp.add_argument('--merge-by', dest='merge_by', choices=['person', 'chat', 'none'],
+                    default='person', help='合并分组方式（默认 person）')
+    vp.add_argument('--split', choices=['single', 'per-day', 'per-month'], default='single',
+                    help='合并文件拆分方式（默认 single）')
+    vp.add_argument('--gap', type=float, default=1.0, help='合并时段间静音秒数（默认 1.0）')
+    vp.add_argument('--out', default=None, help='输出根目录（默认 <项目根>/export/voice）')
+    vp.add_argument('--keep-silk', action='store_true', help='同时保留原始 .silk 文件')
+    vp.add_argument('--workers', type=int, default=4, help='解码并行线程数（默认 4）')
+    vp.add_argument('--no-zip', dest='zip_output', action='store_false', default=True,
+                    help='不打包 zip')
+    vp.add_argument('--decrypted-dir', help='解密后的数据目录')
+    vp.set_defaults(func=cmd_voice_export)
 
     # chatlab-pull
     cp = sub.add_parser('chatlab-pull',
