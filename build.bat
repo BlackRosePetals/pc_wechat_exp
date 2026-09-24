@@ -82,6 +82,7 @@ if %errorlevel% neq 0 (
     --hidden-import jieba.posseg ^
     --hidden-import requests ^
     --hidden-import zhconv ^
+    --hidden-import lameenc ^
     --collect-all zhconv ^
     --hidden-import pypinyin ^
     --hidden-import psutil ^

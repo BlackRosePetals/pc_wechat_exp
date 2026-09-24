@@ -22,3 +22,4 @@ psutil>=7.0
 
 # Build tool
 pyinstaller>=6.0.0
+lameenc>=1.8.0

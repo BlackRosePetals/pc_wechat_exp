@@ -2357,58 +2357,58 @@ def _decrypt_media_db_on_the_fly(src_db: str, decrypted_dir: str) -> str:
         return None
 
 
-def _silk_to_wav(silk_path: str, wav_path: str) -> str:
-    """Convert a SILK V3 file to WAV using standalone decoder. Returns WAV path or None."""
-    import subprocess, sys
-    # Find silk_decoder.exe: try PyInstaller _MEIPASS first, then source tree
-    decoder = None
-    # PyInstaller onefile bundles extract to sys._MEIPASS
+def _find_silk_decoder():
+    """定位 silk_decoder.exe：PyInstaller 解包目录优先，其次项目 tools/。"""
     bundle_dir = getattr(sys, '_MEIPASS', None)
     if bundle_dir:
         candidate = os.path.join(bundle_dir, 'tools', 'silk_decoder.exe')
         if os.path.isfile(candidate):
-            decoder = candidate
-    if not decoder:
-        project_root = os.path.dirname(os.path.dirname(os.path.dirname(
-            os.path.dirname(os.path.abspath(__file__)))))
-        candidate = os.path.join(project_root, 'tools', 'silk_decoder.exe')
-        if os.path.isfile(candidate):
-            decoder = candidate
-    if not decoder:
-        print(f"  [WARN] silk_decoder.exe not found (project_root={project_root}, bundle_dir={bundle_dir})")
+            return candidate
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))))
+    candidate = os.path.join(project_root, 'tools', 'silk_decoder.exe')
+    return candidate if os.path.isfile(candidate) else None
+
+
+def silk_to_pcm(silk_path: str):
+    """SILK → 16-bit 单声道 PCM 字节；失败返回 None（不抛异常、不打印）。
+
+    批量导出会调用成千上万次，所以这里保持"安静"：失败由调用方汇总成缺失清单。
+    """
+    decoder = _find_silk_decoder()
+    if not decoder or not silk_path or not os.path.isfile(silk_path):
         return None
+    pcm_path = silk_path + '.pcm'
     try:
-        pcm_path = wav_path + '.pcm'
-        result = subprocess.run(
-            [decoder, silk_path, pcm_path],
-            capture_output=True, timeout=30
-        )
-        if result.returncode != 0:
-            stderr = result.stderr.decode('utf-8', errors='replace').strip()
-            print(f"  [WARN] silk_decoder.exe failed (exit={result.returncode}): {stderr}")
-            if os.path.isfile(pcm_path):
-                try:
-                    os.remove(pcm_path)
-                except OSError:
-                    pass
-            return None
-        if not os.path.isfile(pcm_path):
-            print(f"  [WARN] silk_decoder.exe produced no output file: {pcm_path}")
+        result = subprocess.run([decoder, silk_path, pcm_path],
+                                capture_output=True, timeout=30)
+        if result.returncode != 0 or not os.path.isfile(pcm_path):
             return None
         with open(pcm_path, 'rb') as f:
-            pcm_data = f.read()
-        os.remove(pcm_path)
-        if not pcm_data:
-            print(f"  [WARN] silk_decoder.exe produced empty PCM: {pcm_path}")
-            return None
-        _write_wav(wav_path, pcm_data)
-        return wav_path
-    except subprocess.TimeoutExpired:
-        print(f"  [WARN] silk_decoder.exe timeout after 30s: {silk_path}")
+            data = f.read()
+        return data or None
+    except (subprocess.SubprocessError, OSError):
         return None
-    except (subprocess.SubprocessError, OSError) as e:
-        print(f"  [WARN] silk_decoder.exe error: {e}")
+    finally:
+        if os.path.isfile(pcm_path):
+            try:
+                os.remove(pcm_path)
+            except OSError:
+                pass
+
+
+def _silk_to_wav(silk_path: str, wav_path: str, sample_rate: int = 24000) -> str:
+    """Convert a SILK V3 file to WAV using standalone decoder. Returns WAV path or None.
+
+    采样率默认 24000：本机实测微信语音解码出的 PCM 就是 24 kHz（8/8 条与 XML
+    voicelength 吻合），因此既有行为的默认值保持不变。
+    """
+    pcm_data = silk_to_pcm(silk_path)
+    if not pcm_data:
+        print(f"  [WARN] SILK 解码失败或解码器缺失: {silk_path}")
         return None
+    _write_wav(wav_path, pcm_data, sample_rate)
+    return wav_path
 
 
 def transcribe_voice(decrypted_dir: str, voice_path: str, create_time: int = None,
