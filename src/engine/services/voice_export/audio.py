@@ -97,3 +97,50 @@ def capabilities() -> dict:
             'mp3': _import_lameenc() is not None,
             'm4a': bool(ffmpeg),
             'ffmpeg': ffmpeg}
+
+
+def silence_pcm(seconds: float, sample_rate: int) -> bytes:
+    """生成静音 PCM（16-bit 单声道）。"""
+    return b'\x00\x00' * int(round(seconds * sample_rate))
+
+
+def resample_pcm(pcm: bytes, src_rate: int, dst_rate: int) -> bytes:
+    """线性插值重采样（16-bit 单声道）。
+
+    * 采样率相同 ⇒ **原样返回**（绝大多数微信语音都是 24k，这条快路径保证批量导出不会变慢）；
+    * 只有混合采样率时才走插值（语音场景精度足够，且避免引入 ffmpeg 依赖）。
+    """
+    if not pcm or src_rate == dst_rate:
+        return pcm
+    import array
+    src = array.array('h')
+    src.frombytes(pcm[:len(pcm) // 2 * 2])
+    n_src = len(src)
+    if n_src == 0:
+        return b''
+    n_dst = int(n_src * dst_rate / float(src_rate))
+    if n_dst <= 0:
+        return b''
+    out = array.array('h', [0]) * n_dst
+    ratio = (n_src - 1) / float(n_dst - 1) if n_dst > 1 else 0.0
+    for i in range(n_dst):
+        pos = i * ratio
+        i0 = int(pos)
+        i1 = i0 + 1 if i0 + 1 < n_src else n_src - 1
+        frac = pos - i0
+        out[i] = int(src[i0] + (src[i1] - src[i0]) * frac)
+    return out.tobytes()
+
+
+def concat_pcm(segments, gap_s: float, dst_rate: int) -> bytes:
+    """把 ``[(pcm, rate), ...]`` 依次拼接：段间插 ``gap_s`` 秒静音，统一到 ``dst_rate``。
+
+    注意：这是**内存内**拼接，适合单个分组（一个人/一天）；超大分组由 layout 层
+    改为流式写出（见 ``layout.write_merged`` 的 ``max_bytes`` 保护）。
+    """
+    parts = []
+    for idx, (pcm, rate) in enumerate(segments):
+        if idx:
+            parts.append(silence_pcm(gap_s, dst_rate))
+        parts.append(resample_pcm(pcm, rate, dst_rate))
+    return b''.join(parts)
