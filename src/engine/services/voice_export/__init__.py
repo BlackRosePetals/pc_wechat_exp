@@ -13,8 +13,11 @@
 """
 
 from .audio import capabilities  # noqa: F401
+from .collect import collect_voice_items  # noqa: F401
 from .model import (VoiceItem, MergeGroup, safe_filename, voice_basename,  # noqa: F401
                     pick_sample_rate, plan_merge, DEFAULT_SAMPLE_RATE)
+from .pipeline import export_voices  # noqa: F401
 
-__all__ = ['capabilities', 'VoiceItem', 'MergeGroup', 'safe_filename',
-           'voice_basename', 'pick_sample_rate', 'plan_merge', 'DEFAULT_SAMPLE_RATE']
+__all__ = ['capabilities', 'collect_voice_items', 'export_voices', 'VoiceItem', 'MergeGroup',
+           'safe_filename', 'voice_basename', 'pick_sample_rate', 'plan_merge',
+           'DEFAULT_SAMPLE_RATE']

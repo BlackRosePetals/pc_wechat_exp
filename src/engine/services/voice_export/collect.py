@@ -24,11 +24,15 @@ ZSTD_MAGIC = b'\x28\xb5\x2f\xfd'
 
 def collect_voice_items(decrypted_dir, *, chats=None, senders=None, start_ts=None, end_ts=None,
                         include_other_chats=False, own_wxid='', own_names=None,
-                        name_lookup=None, progress_fn=None, extract=True):
+                        name_lookup=None, progress_fn=None, extract=True, workers=1):
     """采集语音消息。
 
+    Args:
+        extract: 是否抽取 SILK 并解码出真实时长/采样率（False 时只用 XML 时长兜底）。
+        workers: 解码阶段的并行线程数（解码是子进程 + 只读 DB，可并行）。
+
     Returns:
-        ``(items, missing)``：``items`` 为 :class:`VoiceItem` 列表（按时间排序）；
+        ``(items, missing)``：``items`` 为 :class:`VoiceItem` 列表（按时间排序，解码失败者带 ``error``）；
         ``missing`` 为 ``[{'sender_name','chat_name','datetime','reason'}]``。
     """
     own = own_id_forms(own_wxid or '')
@@ -89,12 +93,6 @@ def collect_voice_items(decrypted_dir, *, chats=None, senders=None, start_ts=Non
                     if not item.silk_path:
                         missing.append(_missing(item, '备份中找不到这条语音数据（可重跑一次「一键备份」）'))
                         continue
-                    pcm = silk_to_pcm(item.silk_path)
-                    if not pcm:
-                        missing.append(_missing(item, 'SILK 解码失败'))
-                        continue
-                    item.sample_rate = pick_sample_rate(len(pcm), item.duration_ms)
-                    item.duration_s = len(pcm) / 2.0 / item.sample_rate
                     items.append(item)
         except sqlite3.Error as e:
             if progress_fn:
@@ -103,8 +101,30 @@ def collect_voice_items(decrypted_dir, *, chats=None, senders=None, start_ts=Non
             if conn:
                 conn.close()
 
+    if extract and items:
+        if progress_fn:
+            progress_fn('extract', '正在解码 %d 条语音（%d 线程）...' % (len(items), workers))
+        if workers and workers > 1:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=int(workers)) as pool:
+                list(pool.map(_decode_item, items))
+        else:
+            for item in items:
+                _decode_item(item)
+
     items.sort(key=lambda i: (i.create_time, i.local_id))
     return items, missing
+
+
+def _decode_item(item):
+    """解码一条语音，回填真实采样率与时长（**以 PCM 长度为准**）。"""
+    pcm = silk_to_pcm(item.silk_path)
+    if not pcm:
+        item.error = 'SILK 解码失败'
+        return item
+    item.sample_rate = pick_sample_rate(len(pcm), item.duration_ms)
+    item.duration_s = len(pcm) / 2.0 / item.sample_rate
+    return item
 
 
 def _missing(item, reason):
