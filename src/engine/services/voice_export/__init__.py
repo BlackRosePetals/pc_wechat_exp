@@ -13,5 +13,8 @@
 """
 
 from .audio import capabilities  # noqa: F401
+from .model import (VoiceItem, MergeGroup, safe_filename, voice_basename,  # noqa: F401
+                    pick_sample_rate, plan_merge, DEFAULT_SAMPLE_RATE)
 
-__all__ = ['capabilities']
+__all__ = ['capabilities', 'VoiceItem', 'MergeGroup', 'safe_filename',
+           'voice_basename', 'pick_sample_rate', 'plan_merge', 'DEFAULT_SAMPLE_RATE']
