@@ -1170,6 +1170,8 @@ def main():
         cmd_serve(args)
     elif args.command == 'export':
         cmd_export(args)
+    elif args.command == 'voice-export':
+        _exit_with(cmd_voice_export(args))
     elif args.command == 'chatlab-pull':
         cmd_chatlab_pull(args)
     elif args.command == 'import-keys':

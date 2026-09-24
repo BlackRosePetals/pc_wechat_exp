@@ -106,3 +106,21 @@ def test_cli_help_lists_voice_export_flags():
     for flag in ('--chat', '--sender', '--format', '--layout', '--merge-by', '--split',
                  '--gap', '--keep-silk', '--workers'):
         assert flag in proc.stdout, flag
+
+
+def test_cli_actually_dispatches_voice_export(tmp_path):
+    """真机路径回归：`main()` 用 if/elif 显式派发子命令（不是 `args.func`），
+    **漏接就会"解析成功但什么都不做"**（曾经真的漏接过，冒烟才发现）。
+    这里真的起子进程跑一遍，断言它执行到了导出逻辑并打印了完成行。
+    """
+    dec = tmp_path / 'decrypted'
+    (dec / 'message').mkdir(parents=True)
+    proc = subprocess.run([sys.executable, os.path.join(ROOT, 'src', 'main.py'),
+                           'voice-export', '--chat', 'wxid_demo_1a2b',
+                           '--decrypted-dir', str(dec),
+                           '--out', str(tmp_path / 'out'), '--no-zip',
+                           '--layout', 'files'],
+                          capture_output=True, text=True, timeout=180, cwd=ROOT)
+    assert proc.returncode == 0, proc.stderr
+    assert '完成：0 条' in proc.stdout, proc.stdout
+    assert '输出目录' in proc.stdout
