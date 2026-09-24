@@ -8,7 +8,8 @@ import os
 import re
 import sqlite3
 
-from engine.services.media import _get_base_storage, _account_dirs_under
+from engine.services.media import (_get_base_storage, _account_dirs_under,
+                                   _hardlink_rows_by_keys)
 
 
 def _scan_filesystem_for_media(decrypted_dir: str, file_name_prefix: str,
@@ -296,12 +297,9 @@ def _resolve_media_from_proto(decrypted_dir: str, packed_info: bytes, ltype: int
         table_name = f'{table_suffix}_hardlink_info_v4'
         try:
             hl_conn = sqlite3.connect(hardlink_db)
-            rows = hl_conn.execute(
-                f"SELECT file_name, file_size, dir1, dir2 FROM [{table_name}]"
-                f" WHERE md5=? ORDER BY CASE WHEN substr(file_name, -6)='_h.dat' THEN 2"
-                f" WHEN substr(file_name, -6)='_t.dat' THEN 3 ELSE 1 END",
-                (md5_str,)
-            ).fetchall()
+            # issue #19：一次查**两套 md5**（`md5` 列的 CDN md5 与 `file_name` 前缀的文件 md5），
+            # 否则带文件 md5 的消息会 miss 并回落到 local_id 兜底（本机实测 15% 会取到别的图）。
+            rows = _hardlink_rows_by_keys(hl_conn, table_name, md5_str)
             if rows:
                 matched_suffix = table_suffix
                 break
@@ -317,18 +315,25 @@ def _resolve_media_from_proto(decrypted_dir: str, packed_info: bytes, ltype: int
         res_name = _lookup_resource_file_name(
             decrypted_dir, chat_id, local_id, ltype)
         if res_name:
+            # issue #19：这条兜底按 (chat_id, local_id, type) 查 `MessageResourceInfo`，
+            # 与请求的 md5 **没有交叉校验** —— 本机实测 60 条图片消息里 9 条（15%）
+            # 因此取到**别的图**。所以：只有当兜底结果能证明"就是这张图"时才采用
+            # （文件名前缀 == 请求 md5，或该行的 md5 列 == 请求 md5）；
+            # 证明不了 ⇒ 不用它（宁可显示"媒体文件未找到"，也不许显示错的图）。
+            fb_row = None
+            fb_suffix = None
             for table_suffix in table_order:
                 table_name = f'{table_suffix}_hardlink_info_v4'
                 try:
                     hl_conn = sqlite3.connect(hardlink_db)
-                    fb_row = hl_conn.execute(
-                        f"SELECT file_name, file_size, dir1, dir2 FROM [{table_name}]"
+                    cand = hl_conn.execute(
+                        f"SELECT file_name, file_size, dir1, dir2, md5 FROM [{table_name}]"
                         " WHERE file_name LIKE ?",
                         (res_name + '%',)
                     ).fetchone()
-                    if fb_row:
-                        rows = [fb_row]
-                        matched_suffix = table_suffix
+                    if cand:
+                        fb_row = cand
+                        fb_suffix = table_suffix
                         break
                     hl_conn.close()
                     hl_conn = None
@@ -337,6 +342,19 @@ def _resolve_media_from_proto(decrypted_dir: str, packed_info: bytes, ltype: int
                         hl_conn.close()
                         hl_conn = None
                     continue
+            if fb_row:
+                _fn, _fs, _d1, _d2, _row_md5 = fb_row
+                _proven = (
+                    str(_fn).lower().startswith(md5_str.lower())
+                    or str(_row_md5 or '').lower() == md5_str.lower()
+                )
+                if _proven:
+                    rows = [(fb_row[0], fb_row[1], fb_row[2], fb_row[3])]
+                    matched_suffix = fb_suffix
+                else:
+                    print(f"  [media] 拒绝 local_id 兜底候选（与请求 md5 不一致，"
+                          f"issue #19 防错图）: 请求={md5_str[:8]}.. 候选={str(_fn)[:8]}..",
+                          flush=True)
             if not rows:
                 # Last resort: scan filesystem directly
                 fs_path = _scan_filesystem_for_media(
@@ -522,10 +540,9 @@ def _resolve_media_from_xml(xml_content: str, decrypted_dir: str, ltype: int) ->
         table_name = f'{table_suffix}_hardlink_info_v4'
         try:
             hl_conn = sqlite3.connect(hardlink_db)
-            rows = hl_conn.execute(
-                f"SELECT file_name, file_size, dir1, dir2 FROM [{table_name}] WHERE md5=?",
-                (md5_str,)
-            ).fetchall()
+            # issue #19：XML 里的 md5 可能是**文件 md5**（`file_name` 前缀），
+            # 只查 `md5` 列会 miss ⇒ 两套都查。
+            rows = _hardlink_rows_by_keys(hl_conn, table_name, md5_str)
             if rows:
                 matched_suffix = table_suffix
                 break

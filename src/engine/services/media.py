@@ -414,8 +414,54 @@ def _try_backup_media_by_md5(decrypted_dir: str, media_type: int, md5: str) -> s
     return None
 
 
+def _hardlink_rows_by_keys(conn, table_name: str, md5: str) -> list:
+    """按 hardlink DB 的**两套 md5** 查行：先 `md5` 列（CDN md5），再 `file_name` 前缀（文件 md5）。
+
+    issue #19（作者定位准确）：`<x>_hardlink_info_v4` 里
+
+      * `md5` 列   = **CDN 资源 md5**
+      * `file_name` = `<文件 md5>.dat`（本地文件名）
+
+    而消息 XML / `packed_info_data` 里**两种形态都会出现**。旧代码只查 `WHERE md5=?`，
+    对"带文件 md5"的消息 **100% miss**（控制方本机实测：60/60 条图片消息请求的 md5
+    只命中 `file_name`、不命中 `md5` 列）⇒ 只能回落到 `MessageResourceInfo` 的
+    local_id 兜底，而那条兜底在本机 60 条里 **9 条（15%）取到的是别的图** ——
+    这就是"显示成另一张图 / 尺寸明显不对"的来源。
+
+    返回按"原图优先、缩略图 `_h`/`_t` 靠后"排序的行列表（与旧行为一致）；
+    每行是 ``(file_name, file_size, dir1, dir2)``。
+    ⚠️ 有的 HardLink 库**没有 `file_size` 列**（版本差异 / 测试夹具）⇒ 按实际列自适应，
+    缺列时用 0 占位，**绝不因此抛异常**（否则整条定位链会静默返回 None）。
+    """
+    try:
+        cols = {r[1] for r in conn.execute('PRAGMA table_info([%s])' % table_name)}
+    except sqlite3.Error:
+        return []
+    if not cols:
+        return []
+    sel = ('file_name, file_size, dir1, dir2' if 'file_size' in cols
+           else 'file_name, 0, dir1, dir2')
+    order = ("ORDER BY CASE WHEN substr(file_name, -6)='_h.dat' THEN 2 "
+             "WHEN substr(file_name, -6)='_t.dat' THEN 3 ELSE 1 END")
+    rows = conn.execute(
+        f"SELECT {sel} FROM [{table_name}] WHERE md5=? {order}",
+        (md5,)
+    ).fetchall()
+    if rows:
+        return rows
+    # 文件 md5 形态（issue #19）：file_name 以请求的 md5 开头
+    return conn.execute(
+        f"SELECT {sel} FROM [{table_name}] WHERE file_name LIKE ? {order}",
+        (md5 + '%',)
+    ).fetchall()
+
+
 def _resolve_from_hardlink_db(decrypted_dir: str, md5: str, media_type: int) -> str:
-    """Look up a file in the HardLink DB by md5 and return its relative path."""
+    """Look up a file in the HardLink DB by md5 and return its relative path.
+
+    `md5` 既可以是 CDN md5（`md5` 列），也可以是文件 md5（`file_name` 前缀）——
+    两种都查，见 :func:`_hardlink_rows_by_keys`（issue #19）。
+    """
     hardlink_db = os.path.join(decrypted_dir, "hardlink", "hardlink.db")
     if not os.path.isfile(hardlink_db):
         hardlink_db = os.path.join(decrypted_dir, "HardLink", "hardlink.db")
@@ -429,18 +475,11 @@ def _resolve_from_hardlink_db(decrypted_dir: str, md5: str, media_type: int) -> 
     conn = None
     try:
         conn = sqlite3.connect(hardlink_db)
-        # Prefer original (.dat) over thumbnails (_h.dat, _t.dat) when the
-        # same CDN md5 maps to multiple rows in the HardLink DB.
-        rows = conn.execute(
-            f"SELECT file_name, dir1, dir2 FROM [{table_name}] WHERE md5=? "
-            f"ORDER BY CASE WHEN substr(file_name, -6)='_h.dat' THEN 2 "
-            f"WHEN substr(file_name, -6)='_t.dat' THEN 3 ELSE 1 END",
-            (md5,)
-        ).fetchall()
+        rows = _hardlink_rows_by_keys(conn, table_name, md5)
         if not rows:
             return None
 
-        file_name, dir1, dir2 = rows[0]
+        file_name, _file_size, dir1, dir2 = rows[0]
         dir1_name = None
         dir2_name = None
         if dir2:
