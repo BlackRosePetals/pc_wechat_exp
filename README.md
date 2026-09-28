@@ -1,6 +1,6 @@
 # WeChat EXP 使用手册
 
-> 版本：2.10.20260925 | 更新日期：2026-09-25 | 适用 WeChat 4.x（已测试 4.1.9 / 4.1.10 / 4.1.12.55 / 4.1.15.11）| Windows 10/11
+> 版本：2.10.20260928 | 更新日期：2026-09-28 | 适用 WeChat 4.x（已测试 4.1.9 / 4.1.10 / 4.1.12.55 / 4.1.15.11）| Windows 10/11
 
 ---
 
@@ -1050,18 +1050,18 @@ python src/main.py voice-export --chat 张三 --layout files --keep-silk
 ---
 
 > **技术支持**：如遇到问题，请查看 `docs/开发手册.md` 了解技术细节，或提交 Issue 反馈。  
-> **最后更新**：2026-09-25
+> **最后更新**：2026-09-28
 
 ---
 
 ## 下载地址
 
-- 最新版本：`wechat_exp_2.10.20260925.exe` → [点击下载](https://github.com/sunhanaix/pc_wechat_exp/releases/download/v2.10.20260925/wechat_exp_2.10.20260925.exe)
+- 最新版本：`wechat_exp_2.10.20260928.exe` → [点击下载](https://github.com/sunhanaix/pc_wechat_exp/releases/download/v2.10.20260928/wechat_exp_2.10.20260928.exe)
 
 **源码地址**：[https://github.com/sunhanaix/pc_wechat_exp](https://github.com/sunhanaix/pc_wechat_exp)
 
-> **本版校验值**（下载后可比对）：`wechat_exp_2.10.20260925.exe`
-> SHA-256 = `976BBA7327920A4F5630D0AB2E25879B82B8D14DC7E5306B39E5712588FCC7FC`
+> **本版校验值**（下载后可比对）：`wechat_exp_2.10.20260928.exe`
+> SHA-256 = `83D2C8E6BAED6A4022DDC105DF9DA57D9C56130001CE161D27508BC8710BE3D5`
 
 > ⚠️ **发布提醒（发新版时逐条照做，别只改一处）**：
 > ① 用 `build.bat` 构建；② 把 `dist/` 里的产物上传到 GitHub Releases；③ 打上与**该文件名同版本**的 tag（`v<版本>`）；
