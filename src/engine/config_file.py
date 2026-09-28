@@ -161,12 +161,35 @@ def get_db_keys() -> dict:
     return keys
 
 
-def set_db_keys(keys: dict, db_dir: str = '') -> None:
+def get_db_keys_by_salt() -> dict:
+    """Return {salt_hex: key_hex} from config (empty dict for older configs).
+
+    salt（每个加密库 page1 的前 16 字节）是**文件级唯一标识**：不同微信账号的同名库
+    （如各自都有 ``message\\message_0.db``）相对路径相同但 salt 不同。按 salt 存储才能
+    避免「后备份的账号覆盖前一个账号的密钥」（issue #21）。
+    """
+    path = _config_path()
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            cfg = json.load(f)
+    except (ValueError, OSError):
+        return {}
+    by_salt = cfg.get('db_keys_by_salt', {})
+    if not isinstance(by_salt, dict):
+        return {}
+    return {str(k): str(v) for k, v in by_salt.items() if k and v}
+
+
+def set_db_keys(keys: dict, db_dir: str = '', salt_keys: dict = None) -> None:
     """Persist database encryption keys in the unified config file.
 
     Args:
         keys: dict mapping db_rel_path -> 64-char hex enc_key
         db_dir: absolute path to WeChat db_storage directory
+        salt_keys: optional dict mapping salt_hex -> 64-char hex enc_key。
+            **按 salt 存储**，多账号同名库不会互相覆盖（仅累加，不删除）。
     """
     path = _config_path()
     cfg = {}
@@ -180,13 +203,44 @@ def set_db_keys(keys: dict, db_dir: str = '') -> None:
     existing = cfg.get('db_keys', {})
     existing.update({str(k): str(v) for k, v in keys.items()})
     cfg['db_keys'] = existing
+    if salt_keys:
+        by_salt = cfg.get('db_keys_by_salt', {})
+        if not isinstance(by_salt, dict):
+            by_salt = {}
+        by_salt.update({str(k): str(v) for k, v in salt_keys.items() if k and v})
+        cfg['db_keys_by_salt'] = by_salt
     if db_dir:
         cfg['_db_dir'] = str(db_dir)
+        dirs = cfg.get('_db_dirs', [])
+        if not isinstance(dirs, list):
+            dirs = []
+        if str(db_dir) not in dirs:
+            dirs.append(str(db_dir))
+        cfg['_db_dirs'] = dirs
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + '.tmp'
     with open(tmp, 'w', encoding='utf-8') as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
     os.replace(tmp, path)
+
+
+def persist_extracted_keys(key_map: dict, salt_to_dbs: dict, db_dir: str = '') -> int:
+    """把一次密钥提取的成果落盘：**同时**写 rel 表与 salt 表。
+
+    Args:
+        key_map: {salt_hex: key_hex}（提取链路内部本来就是按 salt 组织的）
+        salt_to_dbs: {salt_hex: [相对路径, ...]}
+        db_dir: 本次提取对应的 db_storage 目录
+
+    Returns: 写入 rel 表的条数。
+    """
+    rel_map = {}
+    for salt_hex, key_hex in (key_map or {}).items():
+        for rel in (salt_to_dbs or {}).get(salt_hex, []):
+            rel_map[str(rel)] = str(key_hex)
+    set_db_keys(rel_map, db_dir=db_dir,
+                salt_keys={str(k): str(v) for k, v in (key_map or {}).items() if k and v})
+    return len(rel_map)
 
 
 def remove_db_keys(rels) -> int:

@@ -78,26 +78,30 @@ def _find_key_for_basename(keys: dict, basename: str) -> bytes:
     return None
 
 
-def _find_key_by_hmac(keys: dict, src_path: str) -> bytes:
+def _find_key_by_hmac(keys: dict, src_path: str, salt_keys: dict = None,
+                      page1: bytes = None) -> bytes:
     """Find the correct key for a DB by trying all known keys against page 1 HMAC.
 
     Reads page 1 of the source DB and verifies each known key's HMAC.
     Returns the first matching key, or None if no key matches.
     """
-    try:
-        page1 = _read_page1(src_path)
-    except OSError:
-        return None
+    if page1 is None:
+        try:
+            page1 = _read_page1(src_path)
+        except OSError:
+            return None
 
     if len(page1) < PAGE_SZ:
         return None
 
-    # Deduplicate unique key hex values to avoid redundant HMAC verifications
-    unique_hex = list(dict.fromkeys(kval for kpath, kval in keys.items()
-                                    if len(kval) == 64))
+    # Deduplicate unique key hex values to avoid redundant HMAC verifications.
+    # salt 表里的密钥也要一起试（多账号时正确密钥可能只在 salt 表里）。
+    candidates = list(keys.items()) + list((salt_keys or {}).items())
+    unique_hex = list(dict.fromkeys(kval for kpath, kval in candidates
+                                    if len(str(kval)) == 64))
     for key_hex in unique_hex:
         try:
-            key_bytes = bytes.fromhex(key_hex)
+            key_bytes = bytes.fromhex(str(key_hex))
         except ValueError:
             continue
         if _verify_enc_key(key_bytes, page1):
@@ -105,22 +109,79 @@ def _find_key_by_hmac(keys: dict, src_path: str) -> bytes:
     return None
 
 
-def _resolve_key(keys: dict, src_path: str) -> bytes:
+def _salt_of(page1: bytes) -> str:
+    """page1 的前 16 字节即该加密库的 salt（32 位 hex），文件级唯一标识。"""
+    return page1[:SALT_SZ].hex() if len(page1) >= SALT_SZ else ''
+
+
+def _find_key_by_salt(salt_keys: dict, salt_hex: str, page1: bytes) -> bytes:
+    """按 salt 精确匹配并**实测校验**（同 salt 必为同一文件，校验只是兜底）。"""
+    if not salt_hex or not salt_keys:
+        return None
+    key_hex = salt_keys.get(salt_hex)
+    if not key_hex or len(str(key_hex)) != 64:
+        return None
+    try:
+        key = bytes.fromhex(str(key_hex))
+    except ValueError:
+        return None
+    return key if _verify_enc_key(key, page1) else None
+
+
+def _find_key_by_basename_verified(keys: dict, basename: str, page1: bytes) -> bytes:
+    """按 basename 命中后**仍要校验**：多账号同名库场景下 basename 会命中别的账号的密钥。"""
+    for kpath, kval in keys.items():
+        if os.path.basename(kpath) != basename:
+            continue
+        if len(str(kval)) != 64:
+            continue
+        try:
+            key = bytes.fromhex(str(kval))
+        except ValueError:
+            continue
+        if _verify_enc_key(key, page1):
+            return key
+    return None
+
+
+def _resolve_key(keys: dict, src_path: str, salt_keys: dict = None) -> bytes:
     """Resolve the correct encryption key for a database file.
 
     Priority:
-      1. Exact basename match (fast path — key was previously matched)
-      2. HMAC-based trial of ALL known keys (catches shared keys across shards)
+      1. **salt 精确匹配**（page1 前 16 字节）—— 多账号同名库互不干扰
+      2. basename 匹配，但必须通过 HMAC 校验
+      3. HMAC 全量试探（rel 表 + salt 表）
     """
-    fname = os.path.basename(src_path)
+    try:
+        page1 = _read_page1(src_path)
+    except OSError:
+        page1 = b''
 
-    # 1) Exact basename match
-    key = _find_key_for_basename(keys, fname)
+    if len(page1) >= PAGE_SZ:
+        key = _find_key_by_salt(salt_keys or {}, _salt_of(page1), page1)
+        if key is not None:
+            return key
+        key = _find_key_by_basename_verified(keys, os.path.basename(src_path), page1)
+        if key is not None:
+            return key
+        return _find_key_by_hmac(keys, src_path, salt_keys, page1=page1)
+
+    # 读不到 page1（文件太短/IO 失败）：退回老的 basename 直取，避免比修复前更差
+    key = _find_key_for_basename(keys, os.path.basename(src_path))
     if key is not None:
         return key
+    return _find_key_by_hmac(keys, src_path, salt_keys)
 
-    # 2) HMAC-based trial — try every known key
-    return _find_key_by_hmac(keys, src_path)
+
+def resolve_key_for(src_path: str, keys: dict = None, salt_keys: dict = None) -> bytes:
+    """对外入口：不传密钥时自动从配置里取（rel 表 + salt 表），再解析单个库的密钥。"""
+    if keys is None or salt_keys is None:
+        from engine.config_file import get_db_keys, get_db_keys_by_salt
+        if keys is None:
+            keys = get_db_keys()
+        if salt_keys is None:
+            salt_keys = get_db_keys_by_salt()
+    return _resolve_key(keys, src_path, salt_keys)
 
 
 def _decrypt_one(src: str, dst: str, key: bytes, on_progress, label: str,
@@ -137,11 +198,58 @@ def _decrypt_one(src: str, dst: str, key: bytes, on_progress, label: str,
         return False
 
 
+def _iter_encrypted_dbs(db_storage_path: str):
+    """遍历 db_storage 下所有加密库（跳过 -wal/-shm）。"""
+    for root, _dirs, files in os.walk(db_storage_path):
+        for f in sorted(files):
+            if f.endswith('.db') and not f.endswith('-wal') and not f.endswith('-shm'):
+                yield os.path.join(root, f)
+
+
+def backfill_salt_keys(db_storage_path: str, keys: dict = None, salt_keys: dict = None,
+                       on_progress: Callable[[str], None] = None) -> int:
+    """把"已验证的密钥 ↔ salt"这一事实固化进配置（**只增不改**、幂等）。
+
+    老配置只有 rel 表，本函数借一次"能取到密钥"的机会把 salt 表补齐；读不到 page1 或
+    校验不过的库一律跳过（宁可少写，不可写错）。返回新增条数。
+    """
+    from engine.config_file import get_db_keys, get_db_keys_by_salt, set_db_keys
+
+    if keys is None:
+        keys = get_db_keys()
+    if salt_keys is None:
+        salt_keys = get_db_keys_by_salt()
+
+    known = {str(k): str(v) for k, v in (salt_keys or {}).items()}
+    added = {}
+    for path in _iter_encrypted_dbs(db_storage_path):
+        try:
+            page1 = _read_page1(path)
+        except OSError:
+            continue
+        if len(page1) < PAGE_SZ:
+            continue
+        salt = _salt_of(page1)
+        if not salt or known.get(salt):
+            continue
+        key = _resolve_key(keys, path, salt_keys)
+        if key is None or not _verify_enc_key(key, page1):
+            continue
+        added[salt] = key.hex()
+        known[salt] = key.hex()
+        if on_progress:
+            on_progress('已记录密钥身份: salt=%s… (%s)' % (salt[:8], os.path.basename(path)))
+    if added:
+        set_db_keys({}, db_dir=db_storage_path, salt_keys=added)
+    return len(added)
+
+
 def decrypt_for_backup(
     db_storage_path: str,
     output_dir: str,
     keys: dict,
     on_progress: Callable[[str, float], None] = None,
+    salt_keys: dict = None,
 ) -> list:
     """Decrypt WeChat databases from db_storage to output_dir.
 
@@ -158,6 +266,14 @@ def decrypt_for_backup(
         list of decrypted db file paths
     """
     from engine.decrypt import decrypt_database
+
+    # salt 表：多账号同名库靠它区分（老配置里可能为空，下面会顺手回填）
+    if salt_keys is None:
+        try:
+            from engine.config_file import get_db_keys_by_salt
+            salt_keys = get_db_keys_by_salt()
+        except Exception:
+            salt_keys = {}
 
     msg_src = os.path.join(db_storage_path, 'message')
     msg_out = os.path.join(output_dir, 'message')
@@ -179,7 +295,7 @@ def decrypt_for_backup(
         for i, fname in enumerate(db_files):
             src_path = os.path.join(msg_src, fname)
             dst_path = os.path.join(msg_out, fname)
-            key = _resolve_key(keys, src_path)
+            key = _resolve_key(keys, src_path, salt_keys)
             if key is None:
                 # Log salt for diagnostics
                 try:
@@ -221,7 +337,7 @@ def decrypt_for_backup(
     contact_src = os.path.join(db_storage_path, 'contact', 'contact.db')
     contact_dst = os.path.join(output_dir, 'contact', 'contact.db')
     if os.path.isfile(contact_src):
-        ck = _resolve_key(keys, contact_src)
+        ck = _resolve_key(keys, contact_src, salt_keys)
         if ck:
             if on_progress:
                 on_progress("解密 contact.db", (total - 1) / total)
@@ -238,7 +354,7 @@ def decrypt_for_backup(
     hardlink_src = os.path.join(db_storage_path, 'hardlink', 'hardlink.db')
     hardlink_dst = os.path.join(output_dir, 'hardlink', 'hardlink.db')
     if os.path.isfile(hardlink_src):
-        hl_key = _resolve_key(keys, hardlink_src)
+        hl_key = _resolve_key(keys, hardlink_src, salt_keys)
         if hl_key:
             if on_progress:
                 on_progress("解密 hardlink.db", 0.98)
@@ -249,6 +365,16 @@ def decrypt_for_backup(
                 results.append(hardlink_dst)
             except Exception:
                 pass
+
+    # 自愈：把这次"已验证的密钥 ↔ salt"固化下来，下次（哪怕换账号）也能靠 salt 认出来
+    try:
+        added = backfill_salt_keys(db_storage_path, keys, salt_keys,
+                                   on_progress=(lambda m: on_progress(m, 0.995))
+                                   if on_progress else None)
+        if added and on_progress:
+            on_progress(f"已记录 {added} 个数据库的密钥身份（按 salt，多账号不会互相覆盖）", 0.997)
+    except Exception:
+        pass
 
     if on_progress:
         skipped = total - len(results)

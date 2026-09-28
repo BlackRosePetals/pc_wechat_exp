@@ -447,14 +447,10 @@ def backup_hook_keyscan():
 
             # --- Phase 4: Results ---
             if key_map:
-                # Save keys to config
-                from engine.config_file import set_db_keys as _set_db_keys
-                db_keys = {}
-                for salt_hex, key_hex in key_map.items():
-                    for rel_path in salt_to_dbs.get(salt_hex, []):
-                        db_keys[rel_path] = key_hex
+                # Save keys to config（key_map 是 salt→key，落盘时 rel 表与 salt 表都要写）
+                from engine.config_file import persist_extracted_keys
                 try:
-                    _set_db_keys(db_keys, db_dir)
+                    persist_extracted_keys(key_map, salt_to_dbs, db_dir)
                 except Exception:
                     pass
 

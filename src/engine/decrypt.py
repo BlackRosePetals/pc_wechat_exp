@@ -166,12 +166,14 @@ def run_decrypt(keys_file=None, db_dir=None, out_dir=None, print_fn=None,
         progress_fn = lambda pct, msg: None
 
     if keys_file is None:
-        from engine.config_file import get_db_keys, get_db_dir
+        from engine.config_file import get_db_keys, get_db_dir, get_db_keys_by_salt
         raw_keys = get_db_keys()
+        salt_keys = get_db_keys_by_salt()
         db_dir_val = get_db_dir() or db_dir
         if not raw_keys:
             raise FileNotFoundError("未找到数据库密钥，请先执行密钥提取 (python main.py keys)")
     else:
+        salt_keys = {}
         if not os.path.exists(keys_file):
             raise FileNotFoundError(f"密钥文件不存在: {keys_file}\n请先执行密钥提取")
 
@@ -218,61 +220,17 @@ def run_decrypt(keys_file=None, db_dir=None, out_dir=None, print_fn=None,
         pct = 5 + int((i + 1) / total * 90)
         progress_fn(pct, f"解密: {rel}")
 
-        # Match key: try exact path, then HMAC-based trial of all keys
-        enc_key_hex = None
-        for candidate in [rel, rel.replace("\\", "/"), rel.replace("/", "\\")]:
-            if candidate in raw_keys:
-                enc_key_hex = raw_keys[candidate]
-                break
+        # 选密钥：salt 精确匹配 → basename（需校验）→ 全量 HMAC 试探。
+        # 统一走 backup.decryptor 的实现，避免这里"basename 命中就用"在多账号下拿错密钥。
+        from backup.decryptor import resolve_key_for
+        key_bytes = resolve_key_for(path, raw_keys, salt_keys)
 
-        if enc_key_hex is None:
-            # Try matching by folder/file — prefer same parent dir
-            fname = os.path.basename(rel)
-            rel_parent = os.path.basename(os.path.dirname(rel))
-            best = None
-            for k, v in raw_keys.items():
-                if os.path.basename(k) == fname:
-                    k_parent = os.path.basename(os.path.dirname(k))
-                    if rel_parent == k_parent:
-                        enc_key_hex = v
-                        break
-                    if best is None:
-                        best = v
-            if enc_key_hex is None and best is not None:
-                enc_key_hex = best
-
-        # HMAC-based trial: try ALL known keys against page 1
-        if enc_key_hex is None and os.path.getsize(path) >= PAGE_SZ:
-            try:
-                with open(path, 'rb') as f:
-                    page1 = f.read(PAGE_SZ)
-                for kval in raw_keys.values():
-                    if len(kval) == 64:
-                        try:
-                            kb = bytes.fromhex(kval)
-                        except ValueError:
-                            continue
-                        # Inline HMAC verification (same as key_scan.verify_enc_key)
-                        salt = page1[:SALT_SZ]
-                        mac_salt = bytes(b ^ 0x3A for b in salt)
-                        mac_key = hashlib.pbkdf2_hmac(
-                            "sha512", kb, mac_salt, 2, dklen=KEY_SZ)
-                        hmac_data = page1[SALT_SZ: PAGE_SZ - 80 + 16]
-                        stored_hmac = page1[PAGE_SZ - 64: PAGE_SZ]
-                        hm = hmac_mod.new(mac_key, hmac_data, hashlib.sha512)
-                        hm.update(struct.pack("<I", 1))
-                        if hm.digest() == stored_hmac:
-                            enc_key_hex = kval
-                            break
-            except OSError:
-                pass
-
-        if not enc_key_hex:
+        if not key_bytes:
             print_fn(f"SKIP: {rel} (无密钥)")
             skipped += 1
             continue
 
-        enc_key = bytes.fromhex(enc_key_hex)
+        enc_key = key_bytes
         out_path = os.path.join(out_dir, rel)
 
         print_fn(f"解密: {rel} ({sz/1024/1024:.1f}MB) ...")

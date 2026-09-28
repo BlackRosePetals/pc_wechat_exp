@@ -339,6 +339,11 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft Ya
   font-size: 13px;
   cursor: pointer;
   font-weight: 500;
+  /* 行内元素带纵向 padding 会压住相邻文字（结果卡片里"下载 ZIP"曾盖住说明行），
+     改成 inline-block 让它正常占位；顺带去下划线，更像按钮。 */
+  display: inline-block;
+  text-decoration: none;
+  line-height: 1.4;
 }
 .btn-primary { background: #238636; color: #fff; }
 .btn-primary:hover { background: #2ea043; }

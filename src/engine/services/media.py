@@ -2326,30 +2326,17 @@ def _decrypt_media_db_on_the_fly(src_db: str, decrypted_dir: str) -> str:
     """
     import sqlite3 as _sqlite3
     try:
-        from engine.config_file import get_db_keys
         from engine.decrypt import decrypt_database
+        from backup.decryptor import resolve_key_for
     except ImportError:
         return None
 
-    keys = get_db_keys()
-    if not keys:
+    # salt 优先（多账号同名库靠 salt 区分）；没有可用密钥就返回 None，绝不拿错密钥硬试
+    key = resolve_key_for(src_db)
+    if key is None:
         return None
 
-    # Find key: try basename match first, then fallback to any key
-    key = None
     basename = os.path.basename(src_db)
-    for kpath, kval in keys.items():
-        if os.path.basename(kpath) == basename and len(kval) == 64:
-            key = bytes.fromhex(kval)
-            break
-    if key is None:
-        for v in keys.values():
-            if len(str(v)) == 64:
-                key = bytes.fromhex(str(v))
-                break
-    if key is None:
-        return None
-
     dst = os.path.join(decrypted_dir, "message", basename)
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     try:

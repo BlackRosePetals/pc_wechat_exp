@@ -80,7 +80,34 @@ def collect_db_files(db_dir):
 #  Strategy 1: Load from existing config
 # ---------------------------------------------------------------------------
 def load_from_config(db_dir, db_files, salt_to_dbs, key_map, print_fn):
-    """Try loading keys from .wechat_exp_config.json (and .bak fallback)."""
+    """Try loading keys from .wechat_exp_config.json (and .bak fallback).
+
+    先按 **salt** 精确匹配（多账号同名库不互相干扰），再按相对路径匹配 + HMAC 校验。
+    """
+    # 1) salt 表（新版配置；老配置为空）
+    try:
+        from engine.config_file import get_db_keys_by_salt
+        by_salt = get_db_keys_by_salt() or {}
+    except Exception:
+        by_salt = {}
+    if by_salt:
+        used = 0
+        for rel, path, sz, salt_hex, page1 in db_files:
+            if salt_hex in key_map:
+                continue
+            key_hex = by_salt.get(salt_hex)
+            if not key_hex or len(str(key_hex)) != 64:
+                continue
+            try:
+                if verify_enc_key(bytes.fromhex(str(key_hex)), page1):
+                    key_map[salt_hex] = str(key_hex)
+                    used += 1
+            except ValueError:
+                continue
+        if used:
+            print_fn(f"[config] 按 salt 命中 {used} 个密钥")
+
+    # 2) 老的相对路径匹配（带 HMAC 校验）
     # Project root: __file__ = .../src/engine/services/wechat_key_extract.py
     # Go up 4 levels to get project root
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(
@@ -993,8 +1020,11 @@ def save_key_results(db_files, salt_to_dbs, key_map, db_dir, print_fn):
     # Persist to unified config file
     from engine.config_file import set_db_keys
     flat_keys = {rel: info["enc_key"] for rel, info in result.items()}
-    set_db_keys(flat_keys, db_dir=db_dir)
-    print_fn(f"Keys saved to .wechat_exp_config.json")
+    # salt 一并保存：多账号同名库靠 salt 区分，避免互相覆盖（issue #21）
+    salt_keys = {info["salt"]: info["enc_key"] for info in result.values() if info.get("salt")}
+    set_db_keys(flat_keys, db_dir=db_dir, salt_keys=salt_keys)
+    print_fn(f"Keys saved to .wechat_exp_config.json"
+             + (f" ({len(salt_keys)} salts)" if salt_keys else ""))
 
     return key_map
 

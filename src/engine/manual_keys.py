@@ -422,7 +422,8 @@ def match_entries(db_dir, entries):
                 ok = False
             if ok:
                 matched.append({"rel": d["rel"], "name": d["name"],
-                                "salt": d["salt"][:16], "sizeMb": d["size_mb"]})
+                                "salt": d["salt"][:16], "salt_full": d["salt"],
+                                "sizeMb": d["size_mb"]})
         if matched:
             item["status"] = "matched"
             item["matched"] = matched
@@ -438,11 +439,14 @@ def match_entries(db_dir, entries):
                 item["message"] = (
                     "HMAC 校验未通过，且该行 salt 与本地库不符"
                     "（日志 salt=%s…，本地 salt=%s…）——"
-                    "很可能这份日志来自另一台机器或旧版本微信"
+                    "很可能这份日志来自另一台机器/旧版本微信；"
+                    "若本机登录过**多个微信账号**，也可能是同名库被另一个账号的密钥覆盖（本版已按 salt 区分）"
                     % (e["salt_hint"][:16], local))
             else:
                 scope = "所选数据库" if (e["db_hint"] or e["salt_hint"]) else "本机任何数据库"
-                item["message"] = "HMAC 校验未通过：该密钥与" + scope + "不匹配"
+                item["message"] = ("HMAC 校验未通过：该密钥与" + scope + "不匹配。"
+                                   "若本机登录过**多个微信账号**，常见原因是同名库密钥被"
+                                   "另一个账号覆盖——重新登录该账号并提取一次密钥即可恢复")
         results.append(item)
     return results
 
@@ -456,20 +460,27 @@ def apply_entries(db_dir, entries, force=False):
     results = match_entries(db_dir, entries)
     dbs = scan_databases(db_dir, with_pages=False)
     pairs = {}
+    salt_pairs = {}
     for e, r in zip(entries, results):
         if r["status"] == "matched":
             for m in r["matched"]:
                 pairs[m["rel"]] = e["key"]
+                # 同时按 salt 保存完整标识：多账号同名库不会互相覆盖（issue #21）
+                if m.get("salt_full"):
+                    salt_pairs[m["salt_full"]] = e["key"]
         elif force and e["db_hint"] and r["status"] in ("no_match",):
             # 数据库文件不在本机时也允许按用户写的名字强制保存
             rel = _resolve_rel(dbs, e["db_hint"]) or e["db_hint"].replace("/", "\\")
             if rel:
                 pairs[rel] = e["key"]
+                for d in dbs:
+                    if d.get("rel") == rel and d.get("salt"):
+                        salt_pairs[d["salt"]] = e["key"]
                 r["status"] = "forced"
                 r["message"] = "未通过校验，已按指定数据库强制保存：" + rel
     saved = 0
-    if pairs:
-        set_db_keys(pairs, db_dir=db_dir)
+    if pairs or salt_pairs:
+        set_db_keys(pairs, db_dir=db_dir, salt_keys=salt_pairs)
         saved = len(pairs)
     return {"results": results, "saved": saved,
             "savedDbs": sorted(pairs.keys()), "status": status(db_dir)}

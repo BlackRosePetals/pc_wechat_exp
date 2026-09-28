@@ -717,8 +717,11 @@ def save_results(db_files, salt_to_dbs, key_map, db_dir, out_file, print_fn):
     # Persist to unified config file (.wechat_exp_config.json)
     from engine.config_file import set_db_keys
     flat_keys = {rel: info["enc_key"] for rel, info in result.items()}
-    set_db_keys(flat_keys, db_dir=db_dir)
-    print_fn(f"\n密钥已保存到 .wechat_exp_config.json")
+    # salt 是文件级唯一标识：一并保存，避免多账号同名库互相覆盖（issue #21）
+    salt_keys = {info["salt"]: info["enc_key"] for info in result.values() if info.get("salt")}
+    set_db_keys(flat_keys, db_dir=db_dir, salt_keys=salt_keys)
+    print_fn(f"\n密钥已保存到 .wechat_exp_config.json"
+             + (f"（含 {len(salt_keys)} 个 salt 标识）" if salt_keys else ""))
 
     # Also write to out_file for backward compatibility
     if out_file:
