@@ -99,12 +99,13 @@
 <li><a href="#34-浏览与分析--年度报告">3.4 浏览与分析 — 年度报告</a></li>
 <li><a href="#35-浏览与分析--词云分析">3.5 浏览与分析 — 词云分析</a></li>
 <li><a href="#36-导出--聊天记录导出">3.6 导出 — 聊天记录导出</a></li>
-<li><a href="#37-导出--综合报告">3.7 导出 — 综合报告</a></li>
-<li><a href="#38-导出--员工报表">3.8 导出 — 员工报表</a></li>
-<li><a href="#39-pull-数据源--让-chatlab-直接拉取">3.9 Pull 数据源 — 让 ChatLab 直接拉取</a></li>
-<li><a href="#310-工具--垃圾清理密钥提取与解密数据库">3.10 工具 — 垃圾清理、密钥提取与解密数据库</a></li>
-<li><a href="#311-手动输入密钥已有密钥的用户">3.11 手动输入密钥（已有密钥的用户）</a></li>
-<li><a href="#312-设置--语音转写引擎本地模型--百度语音识别">3.12 设置 — 语音转写引擎（本地模型 / 百度语音识别）</a></li>
+<li><a href="#37-导出--语音留言按人批量导出--自动转-wav">3.7 导出 — 语音留言（按人批量导出 / 自动转 WAV）</a></li>
+<li><a href="#38-导出--综合报告">3.8 导出 — 综合报告</a></li>
+<li><a href="#39-导出--员工报表">3.9 导出 — 员工报表</a></li>
+<li><a href="#310-pull-数据源--让-chatlab-直接拉取">3.10 Pull 数据源 — 让 ChatLab 直接拉取</a></li>
+<li><a href="#311-工具--垃圾清理密钥提取解密数据库">3.11 工具 — 垃圾清理、密钥提取与解密数据库</a></li>
+<li><a href="#312-手动输入密钥已有密钥的用户">3.12 手动输入密钥（已有密钥的用户）</a></li>
+<li><a href="#313-设置--语音转写引擎本地模型--百度语音识别">3.13 设置 — 语音转写引擎（本地模型 / 百度语音识别）</a></li>
 <li><a href="#4-聊天查看器使用详解">聊天查看器使用详解</a></li>
 <li><a href="#41-界面布局">4.1 界面布局</a></li>
 <li><a href="#42-搜索联系人">4.2 搜索联系人</a></li>
@@ -1272,8 +1273,6 @@ python src/main.py voice-export --chat 张三 --layout files --keep-silk
 </ul>
 <p><strong>源码地址</strong>：<a href="https://github.com/sunhanaix/pc_wechat_exp">https://github.com/sunhanaix/pc_wechat_exp</a></p>
 <blockquote>
-<p><strong>本版校验值</strong>（下载后可比对）：<code>wechat_exp_2.10.20260928.exe</code><br>
-SHA-256 = <code>83D2C8E6BAED6A4022DDC105DF9DA57D9C56130001CE161D27508BC8710BE3D5</code></p>
 <p>⚠️ <strong>发布提醒（发新版时逐条照做，别只改一处）</strong>：<br>
 ① 用 <code>build.bat</code> 构建；② 把 <code>dist/</code> 里的产物上传到 GitHub Releases；③ 打上与<strong>该文件名同版本</strong>的 tag（<code>v&lt;版本&gt;</code>）；<br>
 ④ 回过头把本节的「版本号」「下载链接」「本版校验值」<strong>一起</strong>更新为实际产物的值（SHA-256 以构建产物为准，<br>
