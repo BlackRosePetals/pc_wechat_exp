@@ -11,7 +11,7 @@ if _BASE not in sys.path:
 
 from engine.services.chat import get_contacts
 from engine.services.message import query_messages, query_message_detail, get_chat_stats, get_chat_dates
-from engine.services.media import serve_media, serve_hardlink_media, serve_voice, transcribe_voice, decrypt_emoticon_aes_cbc
+from engine.services.media import serve_media, serve_hardlink_media, serve_voice, transcribe_voice, transcribe_voice_cached, decrypt_emoticon_aes_cbc
 from engine.services.address_book import (get_all_contacts, get_all_groups,
                                           filter_contacts, distinct_labels)
 from engine.services.contact_extra import load_labels
@@ -189,17 +189,42 @@ def voice_transcribe():
     if not path:
         return jsonify({'error': 'path required'}), 400
     try:
-        text = transcribe_voice(
+        res = transcribe_voice_cached(
             decrypted_dir, path,
             create_time=request.args.get('create_time', type=int),
             local_id=request.args.get('local_id', type=int),
             db_dir=db_dir,
-            chat=request.args.get('chat') or None)
-        return jsonify({'text': text})
+            chat=request.args.get('chat') or None,
+            refresh=request.args.get('refresh') in ('1', 'true', 'yes'))
+        return jsonify({'text': res['text'], 'cached': bool(res['cached'])})
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+@api_bp.route('/voice/transcripts')
+def voice_transcripts():
+    """GET /api/voice/transcripts?chat=…&items=create_time:local_id,…
+
+    取回该会话里**已经转写并保存过**的语音文字（查看器载入会话时调用）。
+    **只读存储、绝不触发识别** —— 没转写过的语音不会出现在返回里。
+    """
+    chat = request.args.get('chat') or ''
+    raw = request.args.get('items') or ''
+    items = []
+    for part in raw.split(','):
+        part = part.strip()
+        if ':' not in part:
+            continue
+        left, right = part.split(':', 1)
+        try:
+            items.append((int(left), int(right)))
+        except ValueError:
+            continue
+    from engine.services.asr_store import lookup_for_chat
+    rows = lookup_for_chat(chat, items)
+    return jsonify({'transcripts': rows, 'count': len(rows)})
 
 
 @api_bp.route('/emoji')

@@ -2400,6 +2400,75 @@ def _silk_to_wav(silk_path: str, wav_path: str, sample_rate: int = 24000) -> str
     return wav_path
 
 
+def _voice_content_hash(path: str) -> str:
+    """语音内容的哈希（用于转写结果去重：同一段语音在任何备份/文件名下都命中）。"""
+    import hashlib
+    try:
+        with open(path, 'rb') as f:
+            return hashlib.sha1(f.read()).hexdigest()[:16]
+    except OSError:
+        return ''
+
+
+def transcribe_voice_cached(decrypted_dir: str, voice_path: str, create_time: int = None,
+                            local_id: int = None, db_dir: str = None, chat: str = None,
+                            use_cache: bool = True, refresh: bool = False) -> dict:
+    """带缓存的转写（issue #24）。
+
+    先按**语音内容哈希**查存储：命中直接返回（`cached=True`，不再跑模型）；
+    未命中才识别，识别成功且文字非空时写入存储。`refresh=True` 强制重识别并覆盖。
+    返回 {'text', 'cached'}；识别失败/为空时文本为空串，且**不写库**。
+    """
+    # 定位语音文件（与 transcribe_voice 同一套查找规则，复用其实现）
+    filename = os.path.basename(voice_path or '')
+    cache_name = _voice_cache_filename(voice_path, create_time, local_id)
+    lookup_names = [n for n in (filename, cache_name) if n]
+    silk_file = None
+    for d in (os.path.join(decrypted_dir, "media", "voice"),
+              os.path.join(os.path.dirname(decrypted_dir), "voice")):
+        for name in lookup_names:
+            candidate = os.path.join(d, name)
+            if os.path.isfile(candidate):
+                silk_file = candidate
+                break
+        if silk_file:
+            break
+    if not silk_file:
+        silk_file = _extract_voice_from_db(decrypted_dir, create_time, local_id,
+                                           db_dir=db_dir, chat=chat,
+                                           cache_key=cache_name or None)
+
+    store = None
+    vhash = _voice_content_hash(silk_file) if silk_file else ''
+    if use_cache:
+        try:
+            from .asr_store import AsrStore
+            store = AsrStore()
+        except Exception:
+            store = None
+    if store and vhash and not refresh:
+        hit = store.get(vhash)
+        if hit:
+            return {'text': hit['text'], 'cached': True}
+
+    text = transcribe_voice(decrypted_dir, voice_path, create_time=create_time,
+                            local_id=local_id, db_dir=db_dir, chat=chat)
+    if store and vhash and text and text.strip():
+        duration_s = 0.0
+        try:
+            if silk_file:
+                wav_file = os.path.splitext(silk_file)[0] + '.wav'
+                if os.path.isfile(wav_file):
+                    duration_s = round(os.path.getsize(wav_file) / 2.0 / 24000.0, 3)
+        except OSError:
+            duration_s = 0.0
+        store.put(vhash, text, chat_id=chat or '', create_time=create_time or 0,
+                  local_id=local_id or 0, duration_s=duration_s)
+    if store:
+        store.close()
+    return {'text': text, 'cached': False}
+
+
 def transcribe_voice(decrypted_dir: str, voice_path: str, create_time: int = None,
                      local_id: int = None, db_dir: str = None, chat: str = None) -> str:
     """Convert voice SILK to WAV and transcribe using available speech recognition.
