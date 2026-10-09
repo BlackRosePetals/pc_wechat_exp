@@ -227,6 +227,44 @@ def voice_transcripts():
     return jsonify({'transcripts': rows, 'count': len(rows)})
 
 
+@api_bp.route('/voice/transcripts', methods=['POST'])
+def voice_transcripts_save():
+    """POST /api/voice/transcripts —— 前端把本地识别结果回传入库（issue #24）。
+
+    body: {path 或 voice_url, text, chat, create_time, local_id, engine, model}
+    只负责"存"：定位语音 → 算内容哈希 → 入库；返回 {saved, hash}。
+    """
+    decrypted_dir, _, db_dir = _cfg()
+    data = request.get_json(silent=True) or {}
+    text = (data.get('text') or '').strip()
+    voice = data.get('path') or data.get('voice_url') or ''
+    if not voice or not text:
+        return jsonify({'error': 'path and text required'}), 400
+    # voice_url 可能带查询串（?path=...&chat=...&create_time=...）
+    if '?' in voice:
+        from urllib.parse import parse_qs
+        qs = parse_qs(voice.split('?', 1)[1])
+        voice = (qs.get('path') or [voice.split('?', 1)[0]])[0]
+        data.setdefault('chat', (qs.get('chat') or [None])[0])
+        data.setdefault('create_time', (qs.get('create_time') or [None])[0])
+        data.setdefault('local_id', (qs.get('local_id') or [None])[0])
+    def _int(v):
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return None
+    from engine.services.asr_store import save_transcript_for_voice
+    try:
+        h = save_transcript_for_voice(decrypted_dir, voice, text,
+                                      chat=data.get('chat'), create_time=_int(data.get('create_time')),
+                                      local_id=_int(data.get('local_id')), db_dir=db_dir,
+                                      engine=data.get('engine') or 'local',
+                                      model=data.get('model') or '')
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    return jsonify({'saved': bool(h), 'hash': h})
+
+
 @api_bp.route('/emoji')
 def emoji():
     """Serve emoji/sticker image by MD5, with remote CDN fallback.

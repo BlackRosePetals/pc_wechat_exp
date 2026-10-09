@@ -176,3 +176,43 @@ class AsrStore:
     def __exit__(self, *exc):
         self.close()
         return False
+
+def _hash_of_path(path: str) -> str:
+    """按文件内容算哈希（与 media._voice_content_hash 同一算法，供测试/复用）。"""
+    import hashlib
+    try:
+        with open(path, 'rb') as f:
+            return hashlib.sha1(f.read()).hexdigest()[:16]
+    except OSError:
+        return ''
+
+
+def save_transcript_for_voice(decrypted_dir: str, voice_path: str, text: str, chat: str = None,
+                              create_time: int = None, local_id: int = None,
+                              db_dir: str = None, engine: str = 'local', model: str = '',
+                              store: 'AsrStore' = None) -> str:
+    """把一段识别文字按**语音内容哈希**入库（issue #24 第③步）。
+
+    默认引擎的识别跑在浏览器里，结果不会经过服务端，所以前端识别成功后要把文字回传到这里；
+    入库后查看器能自动带出、导出（④⑤）也能带上。返回哈希；没定位到语音或文字为空返回 ''。
+    """
+    text = (text or '').strip()
+    if not text:
+        return ''
+    from .media import locate_voice_file
+    silk = locate_voice_file(decrypted_dir, voice_path, create_time, local_id,
+                             db_dir=db_dir, chat=chat)
+    vhash = _hash_of_path(silk) if silk else ''
+    if not vhash:
+        return ''
+    own = store is None
+    st = store or AsrStore()
+    try:
+        st.put(vhash, text, chat_id=chat or '', create_time=create_time or 0,
+               local_id=local_id or 0, engine=engine or 'local', model=model or '')
+    finally:
+        if own:
+            st.close()
+    return vhash
+
+
