@@ -969,6 +969,23 @@
 <p>💡 想确认一条语音到底多长：看气泡上的秒数（已修正），或播放时播放器显示的时长。</p>
 </blockquote>
 <hr>
+<h3 id="q17-403">Q17：下载语音转文字模型时报 403 / 下载中断怎么办</h3>
+<p><strong>403 是下载源的反爬限制，不是你的网络问题。</strong> 程序已修复（v2.10.20260928 之后）：</p>
+<ul>
+<li>下载请求改为携带<strong>浏览器 User-Agent</strong>（此前用的是 <code>Python-urllib/3.x</code>，会被 <code>hf-mirror.com</code> 直接 403）；</li>
+<li>某个源失败时<strong>自动改用下一个源</strong>（hf-mirror → HuggingFace 官方），不用手动换源；</li>
+<li>权重文件支持<strong>断点续传</strong>（中断后重试会接着下，不用从头来），并在下载完成后校验大小；</li>
+<li>界面会显示<strong>还差多少 MB</strong>，以及哪些文件是随程序内置的（无需下载）。</li>
+</ul>
+<p>仍失败时可以：</p>
+<ol>
+<li><strong>稍后重试</strong>（镜像偶发抖动）；</li>
+<li>点「下载/校验模型」前在界面上<strong>换一个下载源</strong>（有代理时选 HuggingFace 官方最稳）；</li>
+<li><strong>手动放置</strong>：把模型文件按目录结构放进 <code>%LOCALAPPDATA%\WeChatEXP\models\&lt;模型名&gt;\</code>，<br>
+   例如 <code>%LOCALAPPDATA%\WeChatEXP\models\Xenova\whisper-base\onnx\encoder_model_quantized.onnx</code>。<br>
+   只要文件齐全，程序就会直接使用，不再联网；</li>
+<li>换用体积更小的 <strong>Whisper Tiny</strong>（权重约 40MB，界面下拉即可切换；其他模型的小文件已内置）。</li>
+</ol>
 <h2 id="7">7. 附录：命令行参考（高级用户）</h2>
 <p>以下内容适用于熟悉命令行的<strong>高级用户</strong>。普通用户无需了解此部分，直接双击 exe 使用即可。</p>
 <h3 id="71">7.1 全局选项</h3>

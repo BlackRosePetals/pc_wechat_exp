@@ -670,13 +670,24 @@ def asr_install():
                 push("download", msg, min(max(pct, 0.0), 0.99))
             out = download_model(model, base_url=mirror, progress_fn=_progress)
             if out["bytes"]:
-                msg = "模型下载完成（%.1f MB）" % (out["bytes"] / 1048576.0)
+                msg = "模型下载完成（%.1f MB，源：%s）" % (out["bytes"] / 1048576.0,
+                                                        out.get("mirror", ""))
             else:
                 msg = "模型文件已存在，无需下载"
             push.done({"model": model, "downloaded": out["downloaded"],
                        "skipped": out["skipped"], "dir": out["dir"], "message": msg})
         except Exception as e:
-            push.error("下载失败: " + str(e))
+            # 失败时给出"可改用哪个模型"（若它已就绪，界面可一键切换），并附手动放置目录
+            hint = ""
+            try:
+                from engine.services.asr_model import fallback_model_info
+                fb = fallback_model_info(model)
+                hint = ("；可改用 %s（%s）%s" % (fb["label"], "已就绪" if fb["ready"] else "需下载",
+                                               "；也可手动把模型文件放到 " + fb["manualDir"]
+                                               if not fb["ready"] else ""))
+            except Exception:
+                pass
+            push.error("下载失败: " + str(e) + hint)
 
     threading.Thread(target=_run, daemon=True).start()
     return sse_response(gen)
@@ -712,25 +723,27 @@ def wxgf_install_ffmpeg():
         try:
             import shutil
             import tempfile
-            import urllib.request
             dest = tools_dir()
             push("download", "开始下载 ffmpeg: " + url, 0.02)
             tmpdir = tempfile.mkdtemp(prefix="ffmpeg_dl_")
             zip_path = os.path.join(tmpdir, "ffmpeg.zip")
-            state = {"last": 0.0, "shown": 0.0}
+            state = {"last": 0.0}
 
-            def _hook(blocks, block_size, total_size):
-                got = blocks * block_size
-                if total_size and total_size > 0:
-                    pct = min(got / float(total_size), 1.0)
-                    now = time.time()
-                    if now - state["last"] > 0.6:
-                        state["last"] = now
-                        push("download",
-                             "已下载 %.1f / %.1f MB" % (got / 1048576.0, total_size / 1048576.0),
-                             0.05 + pct * 0.8)
+            def _on_bytes(got, total):
+                # 统一下载器回调：带浏览器 UA / 断点续传（issue #23 同类隐患）
+                now = time.time()
+                if now - state["last"] <= 0.6:
+                    return
+                state["last"] = now
+                if total:
+                    push("download", "已下载 %.1f / %.1f MB" % (got / 1048576.0,
+                                                                total / 1048576.0),
+                         0.05 + min(got / float(total), 1.0) * 0.8)
+                else:
+                    push("download", "已下载 %.1f MB" % (got / 1048576.0), 0.4)
 
-            urllib.request.urlretrieve(url, zip_path, reporthook=_hook)
+            from engine.services.http_download import download_file
+            download_file(url, zip_path, timeout=600, progress_fn=_on_bytes)
             push("extract", "下载完成，正在解压 ffmpeg.exe ...", 0.88)
             target = install_ffmpeg_from_zip(zip_path, dest)
             shutil.rmtree(tmpdir, ignore_errors=True)

@@ -109,14 +109,19 @@ function renderModels(status) {
   AVAILABLE.forEach(function (m) {
     var o = document.createElement("option");
     o.value = m.model;
-    o.textContent = m.label + (m.recommended ? "（推荐）" : "") + " · " + m.sizeMb + "MB";
+    o.textContent = m.label + (m.recommended ? "（推荐）" : "") + " · " + m.sizeMb + "MB"
+      + (m.complete ? " · 已就绪" : "");
     if (m.model === current) o.selected = true;
     sel.appendChild(o);
   });
   var ms = (status && status.localModelStatus) || {};
+  var bundledN = (ms.files || []).filter(function (f) { return f.bundled; }).length;
   el("model-status").innerHTML = ms.complete
     ? "✅ 模型已就绪（" + (ms.model || "") + "）"
-    : "⚠ 模型未下载完整，缺少 " + ((ms.missing || []).length) + " 个文件，请点「下载/校验模型」";
+    : "⚠ 模型未下载完整：缺少 " + ((ms.missing || []).length) + " 个文件、约 "
+      + (ms.missingMb || 0) + " MB"
+      + (bundledN ? "（其中 " + bundledN + " 个随程序内置，无需下载）" : "")
+      + "，请点「下载/校验模型」";
 }
 
 function loadSettings() {
