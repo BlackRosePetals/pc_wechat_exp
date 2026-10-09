@@ -198,6 +198,58 @@ class VoicePlayerComponent {
     }
   }
 
+  // issue #24：载入会话时把**已经转写并保存过**的文字自动带出来（只读，不触发识别）。
+  // 语音消息的播放按钮上带着 voiceUrl（含 chat/create_time/local_id），从 DOM 直接读，
+  // 按会话分组各发一次请求，避免每条语音一个请求。
+  loadSavedTranscripts() {
+    try {
+      const groups = {};       // chat -> [ 'ct:lid', ... ]
+      const targets = {};      // 'chat|ct:lid' -> [msgId, ...]
+      document.querySelectorAll('[id^="vp-result-"]').forEach(function (el) {
+        const msgId = el.id.slice('vp-result-'.length);
+        const holder = el.closest('.msg-bubble') || el.parentElement || document;
+        const btn = holder.querySelector('[onclick*="VoicePlayer.toggle(' + msgId + ',"]');
+        if (!btn) return;
+        const m = /VoicePlayer\.toggle\(\d+,'([^']+)'/.exec(btn.getAttribute('onclick') || '');
+        if (!m) return;
+        const q = new URLSearchParams((m[1].split('?')[1] || ''));
+        const chat = q.get('chat'), ct = q.get('create_time'), lid = q.get('local_id');
+        if (!chat || !ct || !lid) return;
+        const key = ct + ':' + lid;
+        (groups[chat] = groups[chat] || []).push(key);
+        (targets[chat + '|' + key] = targets[chat + '|' + key] || []).push(msgId);
+      });
+      Object.keys(groups).forEach(function (chat) {
+        fetch('/api/voice/transcripts?chat=' + encodeURIComponent(chat) +
+              '&items=' + encodeURIComponent(groups[chat].join(',')))
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            const rows = (d && d.transcripts) || {};
+            Object.keys(rows).forEach(function (key) {
+              const text = rows[key] && rows[key].text;
+              if (!text) return;
+              (targets[chat + '|' + key] || []).forEach(function (msgId) {
+                const resultEl = document.getElementById('vp-result-' + msgId);
+                const btn = document.getElementById('vp-trans-btn-' + msgId);
+                if (resultEl && !resultEl.textContent) {
+                  resultEl.textContent = text;
+                  resultEl.className = 'vp-trans-result success';
+                  resultEl.style.display = '';
+                }
+                if (btn && !btn.disabled) {
+                  btn.textContent = '重新识别';
+                  btn.title = '重新识别（会覆盖已保存的文字）';
+                }
+              });
+            });
+          })
+          .catch(function (e) { console.warn('读取已存转写失败（不影响其它功能）', e); });
+      });
+    } catch (e) {
+      console.warn('读取已存转写失败（不影响其它功能）', e);
+    }
+  }
+
   // 语音识别模型缺失时的引导（首次使用需下载约 42MB，之后完全离线可用）
   showModelPrompt(msgId, voiceUrl, st) {
     const resultEl = document.getElementById('vp-result-' + msgId);
@@ -305,6 +357,8 @@ const transcribeVoice = (msgId, voicePath) => VoicePlayer.transcribeVoice(msgId,
 // 模型下载完成刷新页面后，自动重试之前被中断的转写
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', () => VoicePlayer.tryAutoRetry());
+  document.addEventListener('DOMContentLoaded', () => VoicePlayer.loadSavedTranscripts());
 } else {
   setTimeout(() => VoicePlayer.tryAutoRetry(), 1500);
+  setTimeout(() => VoicePlayer.loadSavedTranscripts(), 1800);
 }
