@@ -83,6 +83,8 @@ def _resolve_sender_any(uid, contact_db_path):
 
 def export_chat(chat_info, out_dir, start_ts=None, end_ts=None, keyword=None,
                 print_fn=None, progress_fn=None, fmt='txt', display_name=None, include_asr=False, asr_lookup=None):
+    if include_asr and asr_lookup is None:
+        asr_lookup = make_asr_lookup(_chat_id_of(chat_info))
     """导出单个聊天的消息记录。
     Args:
         chat_info: from chat_list.scan_chats
@@ -491,3 +493,18 @@ def make_asr_lookup(chat_id, store=None):
         row = rows.get(key)
         return (row or {}).get('text') or None
     return _lookup
+
+
+def _chat_id_of(chat_info):
+    """从 chat_info（dict 或对象）里取会话 id（issue #24：导出侧自动建立转写查询用）。"""
+    if isinstance(chat_info, dict):
+        for k in ('username', 'chat_id', 'user_name', 'id', 'name'):
+            v = chat_info.get(k)
+            if v:
+                return str(v)
+        return ''
+    for k in ('username', 'chat_id', 'user_name', 'id', 'name'):
+        v = getattr(chat_info, k, None)
+        if v:
+            return str(v)
+    return ''
