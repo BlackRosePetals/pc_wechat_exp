@@ -82,7 +82,7 @@ def _resolve_sender_any(uid, contact_db_path):
 
 
 def export_chat(chat_info, out_dir, start_ts=None, end_ts=None, keyword=None,
-                print_fn=None, progress_fn=None, fmt='txt', display_name=None):
+                print_fn=None, progress_fn=None, fmt='txt', display_name=None, include_asr=False, asr_lookup=None):
     """导出单个聊天的消息记录。
     Args:
         chat_info: from chat_list.scan_chats
@@ -281,7 +281,13 @@ def export_chat(chat_info, out_dir, start_ts=None, end_ts=None, keyword=None,
                 sender = f"ID:{sender_id}" if sender_id else ""
 
         # Format text content
-        text = _format_content(content, base_type, is_group)
+        voice_text = None
+        if include_asr and asr_lookup and base_type == 34:
+            try:
+                voice_text = asr_lookup(create_time, local_id)
+            except Exception:
+                voice_text = None
+        text = _format_content(content, base_type, is_group, voice_text=voice_text)
 
         dt = datetime.fromtimestamp(create_time, tz=TZ)
         ts = dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -467,3 +473,21 @@ def export_all_contacts(decrypted_dir, out_dir, start_ts=None, end_ts=None,
             print_fn(f"  {c['display_name']}: {count} 条消息 -> {os.path.basename(path)}")
 
     return results
+
+
+def make_asr_lookup(chat_id, store=None):
+    """返回 (create_time, local_id) -> 语音转写文字 的查询函数（issue #24 第④步）。
+
+    只**读**转写存储、**不触发识别**：导出不该隐式跑模型。
+    没有转写过的语音返回 None，导出里仍是 `[语音]`。
+    """
+    def _lookup(create_time, local_id):
+        try:
+            key = '%d:%d' % (int(create_time), int(local_id))
+            from engine.services import asr_store as _s
+            rows = _s.lookup_for_chat(chat_id, [(create_time, local_id)], store=store)
+        except Exception:
+            return None
+        row = rows.get(key)
+        return (row or {}).get('text') or None
+    return _lookup
