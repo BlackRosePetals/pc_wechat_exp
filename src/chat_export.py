@@ -440,7 +440,7 @@ def _format_content(content, base_type, is_group, voice_text=None):
 
 def export_all_contacts(decrypted_dir, out_dir, start_ts=None, end_ts=None,
                         keyword=None, name_filter=None, print_fn=None,
-                        progress_fn=None, fmt='txt'):
+                        progress_fn=None, fmt='txt', include_asr=False):
     """导出所有匹配联系人的聊天记录。
     Args:
         name_filter: 只导出显示名/用户名包含该关键词的会话
@@ -469,7 +469,7 @@ def export_all_contacts(decrypted_dir, out_dir, start_ts=None, end_ts=None,
         progress_fn(pct, f"导出: {c['display_name']}")
 
         count, path = export_chat(c, out_dir, start_ts, end_ts, keyword,
-                                  print_fn=print_fn, fmt=fmt)
+                                  print_fn=print_fn, fmt=fmt, include_asr=include_asr)
         if count > 0:
             results.append((c["display_name"], count, path))
             print_fn(f"  {c['display_name']}: {count} 条消息 -> {os.path.basename(path)}")
