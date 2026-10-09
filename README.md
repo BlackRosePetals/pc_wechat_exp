@@ -1096,7 +1096,7 @@ python src/main.py voice-export --chat 张三 --layout files --keep-silk
 **源码地址**：[https://github.com/sunhanaix/pc_wechat_exp](https://github.com/sunhanaix/pc_wechat_exp)
 
 > **本版校验值**（下载后可比对）：`wechat_exp_2.11.20261009.exe`
-> SHA-256 = `8A0A4536426AD0F62731D5D0B0B80811689707420C906F2AAFF4CF7F738A5FD2`
+> SHA-256 = `EB7D7593C2A84F3A22581B6812EE3641AFB24A08B690965D974E39A3EE6D7FDA`
 
 > ⚠️ **发布提醒（发新版时逐条照做，别只改一处）**：
 > ① 用 `build.bat` 构建；② 把 `dist/` 里的产物上传到 GitHub Releases；③ 打上与**该文件名同版本**的 tag（`v<版本>`）；
