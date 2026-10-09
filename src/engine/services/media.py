@@ -2410,6 +2410,25 @@ def _voice_content_hash(path: str) -> str:
         return ''
 
 
+def locate_voice_file(decrypted_dir: str, voice_path: str, create_time: int = None,
+                      local_id: int = None, db_dir: str = None, chat: str = None):
+    """定位语音 SILK 文件（缓存目录 → 相邻 voice 目录 → 各 media_*.db 分片按需提取）。
+
+    抽成公开函数是为了让"回传本地识别结果"（issue #24 第③步）也能用同一套定位算内容哈希。
+    """
+    filename = os.path.basename(voice_path or '')
+    cache_name = _voice_cache_filename(voice_path, create_time, local_id)
+    lookup_names = [n for n in (filename, cache_name) if n]
+    for d in (os.path.join(decrypted_dir, "media", "voice"),
+              os.path.join(os.path.dirname(decrypted_dir), "voice")):
+        for name in lookup_names:
+            candidate = os.path.join(d, name)
+            if os.path.isfile(candidate):
+                return candidate
+    return _extract_voice_from_db(decrypted_dir, create_time, local_id,
+                                  db_dir=db_dir, chat=chat, cache_key=cache_name or None)
+
+
 def transcribe_voice_cached(decrypted_dir: str, voice_path: str, create_time: int = None,
                             local_id: int = None, db_dir: str = None, chat: str = None,
                             use_cache: bool = True, refresh: bool = False) -> dict:
@@ -2419,24 +2438,8 @@ def transcribe_voice_cached(decrypted_dir: str, voice_path: str, create_time: in
     未命中才识别，识别成功且文字非空时写入存储。`refresh=True` 强制重识别并覆盖。
     返回 {'text', 'cached'}；识别失败/为空时文本为空串，且**不写库**。
     """
-    # 定位语音文件（与 transcribe_voice 同一套查找规则，复用其实现）
-    filename = os.path.basename(voice_path or '')
-    cache_name = _voice_cache_filename(voice_path, create_time, local_id)
-    lookup_names = [n for n in (filename, cache_name) if n]
-    silk_file = None
-    for d in (os.path.join(decrypted_dir, "media", "voice"),
-              os.path.join(os.path.dirname(decrypted_dir), "voice")):
-        for name in lookup_names:
-            candidate = os.path.join(d, name)
-            if os.path.isfile(candidate):
-                silk_file = candidate
-                break
-        if silk_file:
-            break
-    if not silk_file:
-        silk_file = _extract_voice_from_db(decrypted_dir, create_time, local_id,
-                                           db_dir=db_dir, chat=chat,
-                                           cache_key=cache_name or None)
+    silk_file = locate_voice_file(decrypted_dir, voice_path, create_time,
+                                   local_id, db_dir=db_dir, chat=chat)
 
     store = None
     vhash = _voice_content_hash(silk_file) if silk_file else ''
