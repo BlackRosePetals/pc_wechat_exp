@@ -812,7 +812,8 @@ def cmd_export(args):
             decrypted, out_dir,
             name_filter=getattr(args, 'chat', None),
             fmt=fmt, print_fn=print,
-        )
+            include_asr=bool(getattr(args, 'include_asr', False)),)
+
         print()
         print("完成: %d 个会话导出" % len(results))
     elif mode == 'contacts':
@@ -1050,6 +1051,7 @@ def main():
 
     # export
     ep = sub.add_parser('export', help='导出聊天记录 / 通讯录 / 词云 / 报告 / 员工报表')
+    ep.add_argument('--include-asr', dest='include_asr', action='store_true', help='导出时带上已转写的语音文字（只读转写库，不触发识别）')
     ep.add_argument('--mode', '-m', required=True,
                     choices=['chat', 'contacts', 'wordcloud', 'report', 'employee',
                              'list', 'keys', 'decrypt', 'chatlab'],
