@@ -986,6 +986,21 @@
    只要文件齐全，程序就会直接使用，不再联网；</li>
 <li>换用体积更小的 <strong>Whisper Tiny</strong>（权重约 40MB，界面下拉即可切换；其他模型的小文件已内置）。</li>
 </ol>
+<h3 id="q18">Q18：语音转文字的结果会保存吗？导出能带上吗？</h3>
+<p><strong>会保存，也能带上。</strong></p>
+<ul>
+<li><strong>自动保存</strong>：任何一次成功转出的文字都会存进本机的 <code>%LOCALAPPDATA%\\WeChatEXP\\transcripts.db</code><br>
+  （按<strong>语音内容</strong>索引），失败或空结果不会写入；</li>
+<li><strong>自动带出</strong>：下次打开同一个会话，语音消息会<strong>直接显示上次的文字</strong>，不用重新识别；<br>
+  按钮会变成「<strong>重新识别</strong>」，点它会覆盖旧结果；</li>
+<li><strong>导出可选带上</strong>：</li>
+<li>聊天导出页 / 命令行 <code>export --include-asr</code>：语音消息导出为 <code>[语音] 文字…</code>；</li>
+<li>语音导出页的「<strong>包含语音转文字（如有）</strong>」/ 命令行 <code>voice-export --include-asr</code>：<br>
+    清单 <code>manifest.csv/json</code> 多一列 <code>transcript</code>，独立 HTML 里每条也显示文字稿（可用"文字稿关键字"过滤）；</li>
+<li><strong>两个开关默认关闭</strong>，不勾选时导出结果与旧版完全一致；</li>
+<li><strong>导出只读转写库、不会为了导出而跑识别</strong>（识别很慢，导出不该偷偷跑模型）；</li>
+<li>文字属于聊天内容，<strong>只存在你本机</strong>，程序不会上传。</li>
+</ul>
 <h2 id="7">7. 附录：命令行参考（高级用户）</h2>
 <p>以下内容适用于熟悉命令行的<strong>高级用户</strong>。普通用户无需了解此部分，直接双击 exe 使用即可。</p>
 <h3 id="71">7.1 全局选项</h3>
