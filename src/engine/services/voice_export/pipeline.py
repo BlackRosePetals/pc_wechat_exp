@@ -44,7 +44,7 @@ def export_voices(decrypted_dir, out_root, *, chats=None, senders=None, start_ts
                   inline_max_mb=200.0, max_bytes=layout.DEFAULT_MAX_BYTES,
                   mp3_quality=layout.DEFAULT_MP3_QUALITY,
                   pcm_cache=None, pcm_cache_bytes=DEFAULT_BUDGET_BYTES,
-                  progress_fn=None, cancel=None):
+                  progress_fn=None, cancel=None, include_asr=False):
     """把语音按人（或按会话）批量导出，返回报告字典。
 
     Returns:
@@ -84,6 +84,12 @@ def export_voices(decrypted_dir, out_root, *, chats=None, senders=None, start_ts
         for item in failed:
             missing.append({'sender_name': item.sender_name, 'chat_name': item.chat_name,
                             'datetime': item.datetime_text, 'reason': item.error})
+
+        if include_asr and ok_items:
+            from .transcripts import apply_transcripts
+            filled = apply_transcripts(ok_items)
+            if filled:
+                _progress('collect', '已关联 %d 条语音的转写文字' % filled)
 
         # 输出目录名用**人能读的名字**（只有一个发送者就用他，否则用会话名），而不是 wxid_xxx。
         out_dir = os.path.join(out_root, '%s_%s' % (_output_label(ok_items, chats, senders),
