@@ -363,8 +363,12 @@ def _escape_html(text):
     return str(text).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
 
-def _format_content(content, base_type, is_group):
-    """格式化消息内容为可读文本。"""
+def _format_content(content, base_type, is_group, voice_text=None):
+    """格式化消息内容为可读文本。
+
+    voice_text：该条**语音已转写的文字**（issue #24）。为空/None 时行为与以前完全一致
+    （仍是 `[语音]`），只有拿到文字时才写成 `[语音] 文字…`。
+    """
     if content is None:
         return ""
 
@@ -381,7 +385,8 @@ def _format_content(content, base_type, is_group):
     elif base_type == 6:  # file
         return "[文件]"
     elif base_type == 34:  # voice
-        return "[语音]"
+        spoken = (voice_text or '').strip()
+        return "[语音] %s" % spoken if spoken else "[语音]"
     elif base_type == 42:  # contact_card
         return "[名片]"
     elif base_type == 43:  # video
