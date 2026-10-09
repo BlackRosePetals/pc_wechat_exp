@@ -63,6 +63,7 @@
 {% endblock %}
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/sse_progress.js') }}"></script>
+<label style="display:block;margin:10px 0 0 0" title="只带上已经转写过的语音（只读转写库，不会为了导出而跑识别）"><input type="checkbox" id="cfg-asr"> 包含语音转文字（如有）</label>
 <script src="{{ url_for('static', filename='js/wizard.js') }}"></script>
 <script>
 new WizardPage({
@@ -75,6 +76,7 @@ new WizardPage({
     date_start: document.getElementById('cfg-start').value,
     date_end: document.getElementById('cfg-end').value,
     format: document.getElementById('cfg-format').value,
+    include_asr: !!(document.getElementById('cfg-asr') && document.getElementById('cfg-asr').checked),
   }),
 });
 </script>
