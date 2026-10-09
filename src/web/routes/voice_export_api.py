@@ -85,6 +85,7 @@ def _do_export(opts, push, cancel):
         gap_s=float(opts.get('gap_s') or 1.0), keep_silk=bool(opts.get('keep_silk')),
         workers=int(opts.get('workers') or 4),
         mp3_quality=int(opts.get('mp3_quality') or 7),
+        include_asr=bool(opts.get('include_asr')),
         zip_output=bool(opts.get('zip_output', True)),
         progress_fn=lambda stage, message: push(stage, message, 0.5),
         cancel=lambda: bool(cancel.get('stop')))
@@ -145,6 +146,7 @@ def voice_export():
         'keep_silk': data.get('keep_silk'),
         'workers': data.get('workers'),
         'mp3_quality': data.get('mp3_quality'),
+        'include_asr': data.get('include_asr'),
         'zip_output': data.get('zip_output', True),
     }
 
