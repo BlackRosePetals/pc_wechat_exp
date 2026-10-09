@@ -757,6 +757,7 @@ def cmd_voice_export(args):
             split=(getattr(args, 'split', None) or 'single'),
             gap_s=float(getattr(args, 'gap', 1.0) or 0.0),
             keep_silk=bool(getattr(args, 'keep_silk', False)),
+            include_asr=bool(getattr(args, 'include_asr', False)),
             workers=int(getattr(args, 'workers', 4) or 1),
             mp3_quality=int(getattr(args, 'mp3_quality', 7) or 7),
             zip_output=bool(getattr(args, 'zip_output', True)),
@@ -1105,6 +1106,7 @@ def main():
     vp.add_argument('--mp3-quality', dest='mp3_quality', type=int, default=7,
                     choices=range(0, 10), metavar='0-9',
                     help='MP3 编码质量 0=最好最慢 … 9=最快（默认 7；体积/码率不变）')
+    vp.add_argument('--include-asr', dest='include_asr', action='store_true', help='导出时带上已转写的语音文字（只读转写库，不触发识别）')
     vp.add_argument('--no-zip', dest='zip_output', action='store_false', default=True,
                     help='不打包 zip')
     vp.add_argument('--decrypted-dir', help='解密后的数据目录')
