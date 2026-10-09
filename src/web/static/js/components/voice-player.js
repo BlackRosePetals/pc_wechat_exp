@@ -174,6 +174,7 @@ class VoicePlayerComponent {
       if (text) {
         resultEl.textContent = text;
         resultEl.className = 'vp-trans-result success';
+        saveTranscriptToServer(voiceUrl, text);
       } else {
         resultEl.textContent = '未识别到语音内容';
         resultEl.className = 'vp-trans-result empty';
@@ -284,6 +285,21 @@ class VoicePlayerComponent {
 
 // Singleton instance for inline onclick handlers in message-bubble templates
 const VoicePlayer = new VoicePlayerComponent();
+// issue #24：默认引擎的识别跑在浏览器里，结果不会经过服务端 —— 识别成功后回传入库，
+// 这样「下次载入自动带出文字」与「导出带文字」才能拿到。失败只 warn，不影响用户看到文字。
+function saveTranscriptToServer(voiceUrl, text) {
+  try {
+    if (!text || !text.trim()) return;
+    fetch('/api/voice/transcripts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ voice_url: voiceUrl, text: text, engine: 'local' }),
+    }).catch(function (e) { console.warn('转写结果回传失败（不影响本次显示）', e); });
+  } catch (e) {
+    console.warn('转写结果回传失败（不影响本次显示）', e);
+  }
+}
+
 const transcribeVoice = (msgId, voicePath) => VoicePlayer.transcribeVoice(msgId, voicePath);
 
 // 模型下载完成刷新页面后，自动重试之前被中断的转写
