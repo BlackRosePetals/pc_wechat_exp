@@ -1,6 +1,6 @@
 # WeChat EXP 使用手册
 
-> 版本：2.10.20260928 | 更新日期：2026-09-28 | 适用 WeChat 4.x（已测试 4.1.9 / 4.1.10 / 4.1.12.55 / 4.1.15.11）| Windows 10/11
+> 版本：2.10.20261009 | 更新日期：2026-10-09 | 适用 WeChat 4.x（已测试 4.1.9 / 4.1.10 / 4.1.12.55 / 4.1.15.11）| Windows 10/11
 
 ---
 
@@ -804,7 +804,7 @@ WeChat EXP 是一款 Windows 平台下的微信聊天记录**备份、查看与�
 ---
 ### Q17：下载语音转文字模型时报 403 / 下载中断怎么办
 
-**403 是下载源的反爬限制，不是你的网络问题。** 程序已修复（v2.10.20260928 之后）：
+**403 是下载源的反爬限制，不是你的网络问题。** 程序已修复（v2.10.20261009 之后）：
 
 * 下载请求改为携带**浏览器 User-Agent**（此前用的是 `Python-urllib/3.x`，会被 `hf-mirror.com` 直接 403）；
 * 某个源失败时**自动改用下一个源**（hf-mirror → HuggingFace 官方），不用手动换源；
@@ -1069,18 +1069,18 @@ python src/main.py voice-export --chat 张三 --layout files --keep-silk
 ---
 
 > **技术支持**：如遇到问题，请查看 `docs/开发手册.md` 了解技术细节，或提交 Issue 反馈。  
-> **最后更新**：2026-09-28
+> **最后更新**：2026-10-09
 
 ---
 
 ## 下载地址
 
-- 最新版本：`wechat_exp_2.10.20260928.exe` → [点击下载](https://github.com/sunhanaix/pc_wechat_exp/releases/download/v2.10.20260928/wechat_exp_2.10.20260928.exe)
+- 最新版本：`wechat_exp_2.10.20261009.exe` → [点击下载](https://github.com/sunhanaix/pc_wechat_exp/releases/download/v2.10.20261009/wechat_exp_2.10.20261009.exe)
 
 **源码地址**：[https://github.com/sunhanaix/pc_wechat_exp](https://github.com/sunhanaix/pc_wechat_exp)
 
-> **本版校验值**（下载后可比对）：`wechat_exp_2.10.20260928.exe`
-> SHA-256 = `000BC70437123D68C953D35D0F95DC0C12C2A5757686BD8F0F04717A9663BB6B`
+> **本版校验值**（下载后可比对）：`wechat_exp_2.10.20261009.exe`
+> SHA-256 = `8A0A4536426AD0F62731D5D0B0B80811689707420C906F2AAFF4CF7F738A5FD2`
 
 > ⚠️ **发布提醒（发新版时逐条照做，别只改一处）**：
 > ① 用 `build.bat` 构建；② 把 `dist/` 里的产物上传到 GitHub Releases；③ 打上与**该文件名同版本**的 tag（`v<版本>`）；
